@@ -421,11 +421,21 @@ class SerialManager:
             time.sleep(0.3)  # 300ms para dar tiempo a la respuesta F
 
             # Leer con referencia local, fuera del lock
-            respuesta_f = ser.read(4)
+            # La ECU responde exactamente 3 bytes: "002"
+            respuesta_f = ser.read(3)
 
             logger.info(
                 f"Versión de protocolo: {respuesta_f.decode('ascii', errors='replace').strip()!r}"
             )
+
+            # Limpiar cualquier dato residual del buffer antes de iniciar polling
+            with self._lock_serial:
+                if self._serial and self._serial.is_open:
+                    self._serial.reset_input_buffer()
+
+            # Pequeño delay para que la ECU procese y esté lista para el primer Read Page
+            time.sleep(0.2)
+
             return True
 
         except Exception as e:
