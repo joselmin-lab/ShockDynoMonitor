@@ -472,11 +472,10 @@ class MainWindow(QMainWindow):
         
         try:
             dialog = CalibrationDialog(
-                self,
-                self.data_parser,
-                self.serial_manager,
-                self.ultimo_dato,
-                self.config
+                config=self.config,
+                ultimo_dato=self.ultimo_dato,
+                callback_lectura=None,  # Opcional: puedes pasar un callback si quieres
+                parent=self
             )
             dialog.exec_()
         
@@ -491,7 +490,7 @@ class MainWindow(QMainWindow):
     def abrir_configuracion(self):
         """Abrir diálogo de configuración."""
         try:
-            dialog = ConfigDialog(self, self.config)
+            dialog = ConfigDialog(config=self.config, parent=self)
             
             if dialog.exec_():
                 # Usuario aceptó, guardar configuración
