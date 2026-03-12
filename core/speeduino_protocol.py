@@ -10,12 +10,12 @@ Secuencia de handshake:
     1. Enviar 'Q' (0x51) → Respuesta con firma "speeduino ...".
     2. Enviar 'F' (0x46) → Respuesta con versión del protocolo.
 
-Estructura del comando TX Read Page ('r' / 0x72):
+Estructura del comando TX Read Page ('p' / 0x70):
     Byte 0:    0x00       → Header
     Byte 1:    0x07       → Length (7 bytes de payload)
-    Byte 2:    0x72       → Comando 'r' (Read Page)
+    Byte 2:    0x70       → Comando 'p' (Read Page)
     Byte 3:    0x00       → CanID
-    Byte 4:    0x30       → Page
+    Byte 4:    0x01       → Page (página 1 = datos en tiempo real)
     Bytes 5-6: 0x00 0x00  → Offset (16-bit little-endian)
     Bytes 7-8: 0x79 0x00  → Size (16-bit little-endian, 121 bytes)
     Bytes 9-12: CRC32 little-endian de los bytes 0-8
@@ -56,7 +56,7 @@ class SpeeduinoProtocol:
 
     # Constantes del protocolo
     COMANDO_REALTIME = 0x41          # Comando legacy 'A' para datos en tiempo real
-    COMANDO_READ_PAGE = 0x72         # Comando 'r' para leer una página de la ECU
+    COMANDO_READ_PAGE = 0x70         # Comando 'p' para leer una página de la ECU
     COMANDO_HANDSHAKE_Q = 0x51      # Comando 'Q' de handshake (consulta de firma)
     COMANDO_HANDSHAKE_F = 0x46      # Comando 'F' de handshake (consulta de versión)
     HEADER_BYTE_0 = 0x00             # Primer byte del header TX/RX
@@ -65,7 +65,7 @@ class SpeeduinoProtocol:
 
     # Parámetros por defecto del comando Read Page (validados en captura 2026-03-12)
     READ_PAGE_CAN_ID = 0x00   # CanID (0 = local)
-    READ_PAGE_PAGE = 0x30     # Página de datos en tiempo real
+    READ_PAGE_PAGE = 0x01     # Página de datos en tiempo real (página 1)
     READ_PAGE_OFFSET = 0      # Offset dentro de la página
     READ_PAGE_SIZE = 121      # Cantidad de bytes a leer (0x79)
 
@@ -181,10 +181,10 @@ class SpeeduinoProtocol:
         size: int = READ_PAGE_SIZE,
     ) -> bytes:
         """
-        Construye el comando 'r' (Read Page) con el nuevo protocolo serial.
+        Construye el comando 'p' (Read Page) con el nuevo protocolo serial.
 
         La estructura del comando es:
-            [0x00, 0x07, 0x72, can_id, page, offset_lo, offset_hi,
+            [0x00, 0x07, 0x70, can_id, page, offset_lo, offset_hi,
              size_lo, size_hi, CRC32_b0, CRC32_b1, CRC32_b2, CRC32_b3]
 
         Offset y size se codifican en 16 bits little-endian.
@@ -192,7 +192,7 @@ class SpeeduinoProtocol:
 
         Args:
             can_id: Identificador de CAN bus (por defecto 0x00 = local).
-            page:   Número de página a leer (por defecto 0x30 = realtime data).
+            page:   Número de página a leer (por defecto 0x01 = realtime data).
             offset: Offset dentro de la página en bytes (por defecto 0).
             size:   Cantidad de bytes a leer (por defecto 121).
 
@@ -203,13 +203,13 @@ class SpeeduinoProtocol:
 
             protocolo = SpeeduinoProtocol()
             cmd = protocolo.construir_comando_read_page()
-            # cmd == bytes([0x00, 0x07, 0x72, 0x00, 0x30,
+            # cmd == bytes([0x00, 0x07, 0x70, 0x00, 0x01,
             #               0x00, 0x00, 0x79, 0x00, ...CRC...])
         """
-        # Payload: cmd 'r' (B) + canid (B) + page (B) + offset 16-bit LE (H) + size 16-bit LE (H)
+        # Payload: cmd 'p' (B) + canid (B) + page (B) + offset 16-bit LE (H) + size 16-bit LE (H)
         payload = struct.pack(
             '<BBBHH',
-            self.COMANDO_READ_PAGE,  # 0x72 'r'
+            self.COMANDO_READ_PAGE,  # 0x70 'p'
             can_id,                  # CanID
             page,                    # Page
             offset,                  # Offset (16-bit LE)
@@ -233,6 +233,11 @@ class SpeeduinoProtocol:
         El header esperado tiene el formato: 00 XX 00
         Donde XX es el length del payload en bytes.
 
+        Nota: La ECU reporta 122 bytes (0x7A) en el header, pero el frame
+        total es de 128 bytes (3 header + 121 payload + 4 CRC). El byte
+        extra nunca llega, por lo que se corrige el length a 121 cuando
+        el header indica 122.
+
         Args:
             datos: Bytes recibidos (mínimo 3 bytes de header).
 
@@ -246,7 +251,7 @@ class SpeeduinoProtocol:
             protocolo = SpeeduinoProtocol()
             # Respuesta real: 00 7A 00 ...
             valido, length = protocolo.validar_header_respuesta(bytes([0x00, 0x7A, 0x00]))
-            # valido == True, length == 122 (0x7A)
+            # valido == True, length == 121  (corregido de 122)
         """
         if len(datos) < self.TAMANO_HEADER_RX:
             logger.warning(
@@ -266,6 +271,12 @@ class SpeeduinoProtocol:
                 f"(esperado: 00 XX 00)"
             )
             return False, 0
+
+        # La ECU reporta 122 bytes (0x7A) pero el frame real contiene solo
+        # 121 bytes de payload. Corregir para evitar esperar un byte que
+        # nunca llega y que cause un timeout indefinido.
+        if length == 0x7A:
+            length = 121
 
         logger.debug(f"Header válido: length={length} bytes")
         return True, length
