@@ -177,3 +177,15 @@ class SpeeduinoProtocol:
             crc=crc_received,
             is_valid=is_valid
         )
+    
+    # ✅ MÉTODO AGREGADO: Alias por compatibilidad
+    def construir_comando_realtime(self) -> bytes:
+        """
+        Construir comando de solicitud de datos en tiempo real (0x41).
+        
+        Alias para build_realtime_data_command() por compatibilidad con serial_manager.
+        
+        Returns:
+            Comando completo: 00 01 41 [CRC32]
+        """
+        return self.build_realtime_data_command()

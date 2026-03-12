@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -177,6 +178,8 @@ class CalibrationDialog(QDialog):
 
         self.setWindowTitle("Calibración de Sensores - Shock Dyno Monitor")
         self.setMinimumWidth(500)
+        self.setMinimumHeight(600)
+        self.resize(550, 700)
         self.setStyleSheet(ESTILO_DIALOGO)
 
         self._construir_ui()
@@ -198,9 +201,21 @@ class CalibrationDialog(QDialog):
 
     def _construir_ui(self) -> None:
         """Construye la interfaz del diálogo de calibración."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # ─── Área con scroll ───
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #2b2b2b; }")
+
+        # Widget contenedor del contenido
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(12, 12, 12, 12)
+        content_layout.setSpacing(10)
 
         # Nota informativa
         lbl_info = QLabel(
@@ -208,16 +223,21 @@ class CalibrationDialog(QDialog):
             "Los cambios se aplican al pulsar Aceptar."
         )
         lbl_info.setStyleSheet("color: #888; font-size: 11px;")
-        layout.addWidget(lbl_info)
+        content_layout.addWidget(lbl_info)
 
-        layout.addWidget(self._crear_grupo_fuerza())
-        layout.addWidget(self._crear_grupo_recorrido())
-        layout.addWidget(self._crear_grupo_temperaturas())
+        content_layout.addWidget(self._crear_grupo_fuerza())
+        content_layout.addWidget(self._crear_grupo_recorrido())
+        content_layout.addWidget(self._crear_grupo_temperaturas())
 
+        # Agregar contenido al scroll
+        scroll_area.setWidget(content_widget)
+        main_layout.addWidget(scroll_area)
+
+        # ─── Botones FUERA del scroll (siempre visibles) ───
         botones = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         botones.accepted.connect(self._aceptar)
         botones.rejected.connect(self.reject)
-        layout.addWidget(botones)
+        main_layout.addWidget(botones)
 
     def _crear_grupo_fuerza(self) -> QGroupBox:
         """Crea el grupo de calibración de fuerza."""
@@ -768,7 +788,7 @@ class CalibrationDialog(QDialog):
         self._actualizar_lecturas()
         logger.debug("Correcciones de temperatura eliminadas.")
 
-    # ─── Aceptar ──────────────────────────────────────────────────────────
+    # ─── Aceptar ─────────────────────────────────────────────────────��────
 
     def _aceptar(self) -> None:
         """Valida los valores y acepta el diálogo."""

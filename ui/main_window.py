@@ -106,6 +106,24 @@ class MainWindow(QMainWindow):
         # Selector de puerto
         self.combo_puerto = QComboBox()
         self.combo_puerto.setMinimumWidth(150)
+        
+        # ✅ Auto-refresh al abrir dropdown
+        def on_combo_about_to_show():
+            if not self.conectado:  # Solo actualizar si no está conectado
+                current = self.combo_puerto.currentText()
+                self.actualizar_lista_puertos()
+                # Restaurar selección si sigue disponible
+                index = self.combo_puerto.findText(current)
+                if index >= 0:
+                    self.combo_puerto.setCurrentIndex(index)
+        
+        # Conectar al evento antes de mostrar el popup
+        original_showPopup = self.combo_puerto.showPopup
+        def showPopup_with_refresh():
+            on_combo_about_to_show()
+            original_showPopup()
+        self.combo_puerto.showPopup = showPopup_with_refresh
+        
         toolbar.addWidget(QLabel("Puerto:"))
         toolbar.addWidget(self.combo_puerto)
         
