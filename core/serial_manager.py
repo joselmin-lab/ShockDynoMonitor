@@ -43,6 +43,10 @@ logger = logging.getLogger(__name__)
 # Nombre especial para el modo simulador
 NOMBRE_SIMULADOR = "SIMULADOR"
 
+# Mínimo tiempo de pausa al final del ciclo TX para evitar inanición del hilo RX.
+# Fuerza un yield del GIL para que el hilo RX pueda adquirir el lock serial.
+_MIN_TX_YIELD_SLEEP = 0.005  # 5ms
+
 
 class EstadisticasComunicacion:
     """
@@ -305,7 +309,7 @@ class SerialManager:
                 parity=self._cfg_conexion.get("paridad", "N"),
                 stopbits=self._cfg_conexion.get("bits_parada", 1),
                 timeout=timeout,
-                write_timeout=0.5,  # Evita bloqueo indefinido en write() si el buffer se llena
+                write_timeout=0.1,  # Reducido para evitar bloqueos largos y liberar el lock más rápido
             )
 
             self._modo_simulador = False
@@ -478,6 +482,13 @@ class SerialManager:
             # Esperar el tiempo restante del intervalo de polling
             transcurrido = time.time() - inicio
             tiempo_espera = max(0, self._intervalo - transcurrido)
+
+            # Anti-starvation: Si el ciclo TX consumió casi todo el intervalo
+            # (tiempo_espera cercano a 0), dormir un mínimo para forzar un
+            # yield del GIL y dar oportunidad al hilo RX de adquirir el lock.
+            if tiempo_espera < _MIN_TX_YIELD_SLEEP:
+                time.sleep(_MIN_TX_YIELD_SLEEP)
+
             self._evento_detener.wait(tiempo_espera)
 
     def _worker_rx(self) -> None:
