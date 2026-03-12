@@ -375,10 +375,15 @@ class SerialManager:
         while not self._evento_detener.is_set():
             inicio = time.time()
             try:
-                with self._lock_serial:
-                    if self._serial and self._serial.is_open:
-                        self._serial.write(comando)
-                        self.estadisticas.incrementar_enviados()
+                if self._lock_serial.acquire(timeout=1.0):
+                    try:
+                        if self._serial and self._serial.is_open:
+                            self._serial.write(comando)
+                            self.estadisticas.incrementar_enviados()
+                    finally:
+                        self._lock_serial.release()
+                else:
+                    logger.warning("Timeout esperando lock serial en TX")
             except Exception as e:
                 logger.error(f"Error en TX: {e}")
 
@@ -399,19 +404,30 @@ class SerialManager:
 
         while not self._evento_detener.is_set():
             try:
-                with self._lock_serial:
-                    if not (self._serial and self._serial.is_open):
-                        time.sleep(0.01)
-                        continue
-                    bytes_disponibles = self._serial.in_waiting
+                bytes_disponibles = 0
+                if self._lock_serial.acquire(timeout=1.0):
+                    try:
+                        if not (self._serial and self._serial.is_open):
+                            time.sleep(0.01)
+                            continue
+                        bytes_disponibles = self._serial.in_waiting
+                    finally:
+                        self._lock_serial.release()
+                else:
+                    logger.warning("Timeout esperando lock serial en RX")
+                    time.sleep(0.01)
+                    continue
 
                 if bytes_disponibles > 0:
-                    with self._lock_serial:
-                        nuevos_bytes = self._serial.read(bytes_disponibles)
-                    buffer_rx.extend(nuevos_bytes)
+                    if self._lock_serial.acquire(timeout=1.0):
+                        try:
+                            nuevos_bytes = self._serial.read(bytes_disponibles)
+                        finally:
+                            self._lock_serial.release()
+                        buffer_rx.extend(nuevos_bytes)
 
-                    # Intentar parsear mensajes completos del buffer
-                    buffer_rx = self._procesar_buffer(buffer_rx)
+                        # Intentar parsear mensajes completos del buffer
+                        buffer_rx = self._procesar_buffer(buffer_rx)
                 else:
                     time.sleep(0.005)  # 5ms de espera si no hay datos
 
@@ -627,6 +643,32 @@ class SerialManager:
         self._hilo_simulador = None
 
         logger.info("Desconectado correctamente.")
+
+    def actualizar_calibracion(self, nueva_config: dict) -> None:
+        """
+        Actualiza la configuración de calibración del parser en tiempo real.
+
+        Permite cambiar escalas y offsets de los sensores sin desconectar
+        ni reiniciar la comunicación. Los cambios se aplican a partir del
+        próximo dato recibido.
+
+        Args:
+            nueva_config: Diccionario con la nueva configuración completa.
+                          Se usa la clave ``"sensores"`` para los parámetros
+                          de calibración.
+
+        Ejemplo::
+
+            manager.actualizar_calibracion({
+                "sensores": {
+                    "fuerza": {"escala": 0.5, "offset_valor": -150.0},
+                    "recorrido": {"escala": 0.45, "offset_valor": -5.0},
+                }
+            })
+        """
+        self._config = nueva_config
+        self._parser.actualizar_config(nueva_config)
+        logger.info("Calibración del SerialManager actualizada.")
 
     @property
     def esta_conectado(self) -> bool:

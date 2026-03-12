@@ -13,6 +13,7 @@ Offsets validados mediante captura real (2026-03-12):
 """
 
 import logging
+import struct
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -135,6 +136,32 @@ class SpeeduinoDataParser:
         self._config = config or {}
         self._cfg_sensores = self._config.get("sensores", {})
         logger.debug("SpeeduinoDataParser inicializado.")
+
+    def actualizar_config(self, nueva_config: dict) -> None:
+        """
+        Actualiza la configuración de calibración en tiempo real.
+
+        Permite cambiar escalas y offsets de los sensores sin reiniciar
+        el parser. Los cambios se aplican a partir de la próxima llamada
+        a :meth:`parsear`.
+
+        Args:
+            nueva_config: Diccionario con la nueva configuración completa.
+                          Se usa la clave ``"sensores"`` para los parámetros
+                          de calibración de cada sensor.
+
+        Ejemplo::
+
+            parser.actualizar_config({
+                "sensores": {
+                    "fuerza": {"escala": 0.5, "offset_valor": -150.0},
+                    "recorrido": {"escala": 0.45, "offset_valor": -5.0},
+                }
+            })
+        """
+        self._config = nueva_config or {}
+        self._cfg_sensores = self._config.get("sensores", {})
+        logger.info("Calibración del parser actualizada.")
 
     def _obtener_escala_offset(
         self, nombre_sensor: str, escala_default: float, offset_default: float
