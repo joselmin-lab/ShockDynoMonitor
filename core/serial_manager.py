@@ -3,8 +3,14 @@ Módulo: serial_manager.py
 Descripción: Gestión de la conexión serial con la ECU Speeduino.
 
 Implementa dos threads:
-  - _hilo_tx: Envía el comando 0x41 cada 50ms (20Hz).
+  - _hilo_tx: Envía el comando Read Page ('r' / 0x72) cada 50ms (20Hz).
   - _hilo_rx: Lee y parsea las respuestas de la ECU.
+
+Secuencia de conexión:
+  1. Abrir puerto serial.
+  2. Esperar delay de inicialización.
+  3. Realizar handshake: enviar 'Q' → verificar firma "speeduino", enviar 'F'.
+  4. Iniciar threads TX/RX.
 
 También incluye un modo SIMULADOR que genera datos aleatorios realistas
 sin necesidad de hardware real, útil para desarrollo y testing.
@@ -113,10 +119,12 @@ class SerialManager:
     Gestiona la conexión serial con la ECU Speeduino.
 
     Coordina dos threads:
-      - Thread TX: Envía comando 0x41 cada 50ms.
+      - Thread TX: Envía comando Read Page ('r' / 0x72) cada 50ms.
       - Thread RX: Lee respuestas y parsea datos.
 
-    Soporta modo SIMULADOR para testing sin hardware.
+    Realiza handshake automático ('Q' → firma, 'F' → versión) antes de
+    iniciar el polling de datos. Soporta modo SIMULADOR para testing sin
+    hardware.
 
     Ejemplo de uso::
 
@@ -323,10 +331,13 @@ class SerialManager:
 
     def _delay_y_arrancar_threads(self, delay_segundos: int) -> None:
         """
-        Espera el delay de inicialización y luego arranca los threads TX/RX.
+        Espera el delay de inicialización, realiza el handshake y luego
+        arranca los threads TX/RX.
 
         Este método corre en su propio thread para no bloquear la UI durante
-        el delay obligatorio de 10 segundos después de conectar a la ECU.
+        el delay obligatorio después de conectar a la ECU. Tras el delay,
+        envía los comandos de handshake 'Q' y 'F' para confirmar que la ECU
+        está operativa antes de iniciar el polling de datos.
 
         Args:
             delay_segundos: Segundos a esperar antes de iniciar comunicación.
@@ -337,15 +348,89 @@ class SerialManager:
                 return
             time.sleep(0.1)
 
-        if not self._evento_detener.is_set():
-            logger.info("Delay de inicialización completado. Iniciando comunicación.")
+        if self._evento_detener.is_set():
+            return
+
+        logger.info("Delay de inicialización completado. Realizando handshake...")
+        if self._realizar_handshake():
+            logger.info("Handshake exitoso. Iniciando comunicación.")
             self._arrancar_threads_tx_rx()
+        else:
+            logger.error(
+                "Handshake fallido: no se recibió firma de Speeduino. "
+                "Verifica el puerto y que la ECU esté encendida."
+            )
+            self._conectado = False
+
+    def _realizar_handshake(self) -> bool:
+        """
+        Realiza la secuencia de handshake con la ECU Speeduino.
+
+        Envía el comando 'Q' y verifica que la respuesta contenga la firma
+        "speeduino". Luego envía 'F' para consultar la versión del protocolo.
+
+        Returns:
+            True si el handshake fue exitoso, False en caso contrario.
+        """
+        try:
+            timeout_handshake = self._cfg_conexion.get("timeout_handshake", 2.0)
+
+            with self._lock_serial:
+                if not (self._serial and self._serial.is_open):
+                    logger.error("Puerto serial no disponible para handshake.")
+                    return False
+
+                # Limpiar buffer antes del handshake
+                self._serial.reset_input_buffer()
+
+                # Paso 1: Enviar 'Q' y verificar firma
+                logger.debug("Handshake: enviando 'Q'...")
+                self._serial.write(self._protocolo.construir_comando_handshake_q())
+
+            # Esperar ~10% del timeout antes de leer para dar tiempo a la ECU
+            time.sleep(timeout_handshake * 0.1)
+            with self._lock_serial:
+                if not (self._serial and self._serial.is_open):
+                    return False
+                respuesta_q = self._serial.read(32)
+
+            logger.debug(f"Respuesta 'Q': {respuesta_q!r}")
+
+            if b"speeduino" not in respuesta_q.lower():
+                logger.warning(
+                    f"Firma Speeduino no encontrada en respuesta 'Q': {respuesta_q!r}"
+                )
+                return False
+
+            logger.info(f"Firma recibida: {respuesta_q.decode('ascii', errors='replace').strip()!r}")
+
+            # Paso 2: Enviar 'F' para consultar versión del protocolo
+            with self._lock_serial:
+                if not (self._serial and self._serial.is_open):
+                    return False
+                logger.debug("Handshake: enviando 'F'...")
+                self._serial.write(self._protocolo.construir_comando_handshake_f())
+
+            time.sleep(0.1)
+            with self._lock_serial:
+                if not (self._serial and self._serial.is_open):
+                    return False
+                respuesta_f = self._serial.read(4)
+
+            logger.info(
+                f"Versión de protocolo: {respuesta_f.decode('ascii', errors='replace').strip()!r}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Error durante handshake: {e}")
+            return False
 
     def _arrancar_threads_tx_rx(self) -> None:
         """
         Arranca los threads TX y RX para comunicación bidireccional.
 
-        Thread TX: Envía comando 0x41 cada 50ms.
+        Thread TX: Envía comando Read Page ('r' / 0x72) cada 50ms.
         Thread RX: Lee respuestas y las parsea.
         """
         self._hilo_tx = threading.Thread(
@@ -366,10 +451,12 @@ class SerialManager:
         """
         Worker del thread de transmisión (TX).
 
-        Envía el comando de datos en tiempo real (0x41 con CRC32) cada 50ms.
+        Envía el comando Read Page ('r' / 0x72 con CRC32) cada 50ms.
+        Solicita la página 0x30, offset 0, tamaño 121 bytes, tal como
+        fue validado en la captura de TunerStudio del 2026-03-12.
         Se ejecuta hasta que _evento_detener sea señalado.
         """
-        comando = self._protocolo.construir_comando_realtime()
+        comando = self._protocolo.construir_comando_read_page()
         logger.debug(f"Comando TX listo: {comando.hex(' ').upper()}")
 
         while not self._evento_detener.is_set():

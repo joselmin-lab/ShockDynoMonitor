@@ -6,15 +6,23 @@ Descripción: Implementación del protocolo de comunicación binario con CRC32
 Protocolo validado mediante captura real el 2026-03-12.
 Baudrate: 115200, 8N1, polling a 50ms (20Hz).
 
-Estructura del comando TX (0x41 - Real-time data):
-    Byte 0: 0x00  → Header
-    Byte 1: 0x01  → Length (1 byte de payload)
-    Byte 2: 0x41  → Comando ('A')
-    Bytes 3-6: CRC32 little-endian de los bytes 0-2
+Secuencia de handshake:
+    1. Enviar 'Q' (0x51) → Respuesta con firma "speeduino ...".
+    2. Enviar 'F' (0x46) → Respuesta con versión del protocolo.
+
+Estructura del comando TX Read Page ('r' / 0x72):
+    Byte 0:    0x00       → Header
+    Byte 1:    0x07       → Length (7 bytes de payload)
+    Byte 2:    0x72       → Comando 'r' (Read Page)
+    Byte 3:    0x00       → CanID
+    Byte 4:    0x30       → Page
+    Bytes 5-6: 0x00 0x00  → Offset (16-bit little-endian)
+    Bytes 7-8: 0x79 0x00  → Size (16-bit little-endian, 121 bytes)
+    Bytes 9-12: CRC32 little-endian de los bytes 0-8
 
 Estructura de la respuesta RX:
     Bytes 0-2: Header (00 XX 00, donde XX es el length)
-    Bytes 3-N: Payload (128 bytes de datos de sensores)
+    Bytes 3-N: Payload (121/122 bytes de datos de sensores)
     Bytes N+1-N+4: CRC32 little-endian
 """
 
@@ -31,23 +39,35 @@ class SpeeduinoProtocol:
     """
     Clase que encapsula el protocolo de comunicación con la ECU Speeduino.
 
-    Provee métodos para construir comandos, validar respuestas y
-    calcular/verificar el CRC32 requerido por el protocolo.
+    Provee métodos para construir comandos de handshake, solicitar páginas
+    de datos y validar respuestas con CRC32.
 
     Ejemplo de uso::
 
         protocolo = SpeeduinoProtocol()
-        comando = protocolo.construir_comando_realtime()
+        # Handshake
+        ser.write(protocolo.construir_comando_handshake_q())
+        # Leer página de datos en tiempo real
+        comando = protocolo.construir_comando_read_page()
         # Enviar 'comando' por el puerto serial
         # Recibir 'respuesta' del puerto serial
         valido, payload = protocolo.parsear_respuesta(respuesta)
     """
 
     # Constantes del protocolo
-    COMANDO_REALTIME = 0x41          # Comando 'A' para datos en tiempo real
+    COMANDO_REALTIME = 0x41          # Comando legacy 'A' para datos en tiempo real
+    COMANDO_READ_PAGE = 0x72         # Comando 'r' para leer una página de la ECU
+    COMANDO_HANDSHAKE_Q = 0x51      # Comando 'Q' de handshake (consulta de firma)
+    COMANDO_HANDSHAKE_F = 0x46      # Comando 'F' de handshake (consulta de versión)
     HEADER_BYTE_0 = 0x00             # Primer byte del header TX/RX
-    HEADER_TX_LENGTH = 0x01          # Length del payload TX (1 byte)
-    LONGITUD_PAYLOAD_ESPERADA = 128  # Bytes de payload esperados en la respuesta
+    HEADER_TX_LENGTH = 0x01          # Length del payload TX legacy (1 byte)
+    LONGITUD_PAYLOAD_ESPERADA = 121  # Bytes de payload solicitados en read_page
+
+    # Parámetros por defecto del comando Read Page (validados en captura 2026-03-12)
+    READ_PAGE_CAN_ID = 0x00   # CanID (0 = local)
+    READ_PAGE_PAGE = 0x30     # Página de datos en tiempo real
+    READ_PAGE_OFFSET = 0      # Offset dentro de la página
+    READ_PAGE_SIZE = 121      # Cantidad de bytes a leer (0x79)
 
     # Tamaño del header de respuesta: 3 bytes (00 XX 00)
     TAMANO_HEADER_RX = 3
@@ -113,6 +133,97 @@ class SpeeduinoProtocol:
         cuerpo.extend(struct.pack('<I', crc))
 
         logger.debug(f"Comando realtime construido: {cuerpo.hex(' ').upper()}")
+        return bytes(cuerpo)
+
+    def construir_comando_handshake_q(self) -> bytes:
+        """
+        Construye el comando de handshake 'Q' (consulta de firma de firmware).
+
+        Envía el byte 'Q' (0x51) de forma raw (sin encapsular en el protocolo
+        binario) para despertar la ECU y solicitar su firma de identificación.
+
+        Returns:
+            Bytes del comando (1 byte: ``b'Q'``).
+
+        Ejemplo::
+
+            protocolo = SpeeduinoProtocol()
+            cmd = protocolo.construir_comando_handshake_q()
+            # Esperado: b'Q'  →  La ECU responde con "speeduino XXXXXX"
+        """
+        logger.debug("Comando handshake Q construido.")
+        return bytes([self.COMANDO_HANDSHAKE_Q])
+
+    def construir_comando_handshake_f(self) -> bytes:
+        """
+        Construye el comando de handshake 'F' (consulta de versión de protocolo).
+
+        Envía el byte 'F' (0x46) de forma raw para que la ECU devuelva
+        la versión del protocolo serial que soporta.
+
+        Returns:
+            Bytes del comando (1 byte: ``b'F'``).
+
+        Ejemplo::
+
+            protocolo = SpeeduinoProtocol()
+            cmd = protocolo.construir_comando_handshake_f()
+            # Esperado: b'F'  →  La ECU responde con "002" (versión de protocolo)
+        """
+        logger.debug("Comando handshake F construido.")
+        return bytes([self.COMANDO_HANDSHAKE_F])
+
+    def construir_comando_read_page(
+        self,
+        can_id: int = READ_PAGE_CAN_ID,
+        page: int = READ_PAGE_PAGE,
+        offset: int = READ_PAGE_OFFSET,
+        size: int = READ_PAGE_SIZE,
+    ) -> bytes:
+        """
+        Construye el comando 'r' (Read Page) con el nuevo protocolo serial.
+
+        La estructura del comando es:
+            [0x00, 0x07, 0x72, can_id, page, offset_lo, offset_hi,
+             size_lo, size_hi, CRC32_b0, CRC32_b1, CRC32_b2, CRC32_b3]
+
+        Offset y size se codifican en 16 bits little-endian.
+        El CRC32 se calcula sobre los 9 bytes del comando (header + payload).
+
+        Args:
+            can_id: Identificador de CAN bus (por defecto 0x00 = local).
+            page:   Número de página a leer (por defecto 0x30 = realtime data).
+            offset: Offset dentro de la página en bytes (por defecto 0).
+            size:   Cantidad de bytes a leer (por defecto 121).
+
+        Returns:
+            Bytes del comando completo (13 bytes) listo para enviar por serial.
+
+        Ejemplo::
+
+            protocolo = SpeeduinoProtocol()
+            cmd = protocolo.construir_comando_read_page()
+            # cmd == bytes([0x00, 0x07, 0x72, 0x00, 0x30,
+            #               0x00, 0x00, 0x79, 0x00, ...CRC...])
+        """
+        # Payload: cmd 'r' (B) + canid (B) + page (B) + offset 16-bit LE (H) + size 16-bit LE (H)
+        payload = struct.pack(
+            '<BBBHH',
+            self.COMANDO_READ_PAGE,  # 0x72 'r'
+            can_id,                  # CanID
+            page,                    # Page
+            offset,                  # Offset (16-bit LE)
+            size,                    # Size  (16-bit LE)
+        )
+
+        # Construir cabecera + payload (sin CRC)
+        cuerpo = bytearray([self.HEADER_BYTE_0, len(payload)]) + bytearray(payload)
+
+        # Calcular CRC32 sobre el cuerpo completo y agregar en little-endian
+        crc = self.calcular_crc32(bytes(cuerpo))
+        cuerpo.extend(struct.pack('<I', crc))
+
+        logger.debug(f"Comando read_page construido: {cuerpo.hex(' ').upper()}")
         return bytes(cuerpo)
 
     def validar_header_respuesta(self, datos: bytes) -> Tuple[bool, int]:
