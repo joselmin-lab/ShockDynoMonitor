@@ -296,7 +296,6 @@ class SerialManager:
 
         try:
             baudrate = self._cfg_conexion.get("baudrate", 115200)
-            timeout = self._cfg_conexion.get("timeout", 1.0)
             delay = self._cfg_conexion.get("delay_conexion", 10)
 
             logger.info(f"Conectando a {puerto} a {baudrate} baudios...")
@@ -307,8 +306,8 @@ class SerialManager:
                 bytesize=self._cfg_conexion.get("bits_datos", 8),
                 parity=self._cfg_conexion.get("paridad", "N"),
                 stopbits=self._cfg_conexion.get("bits_parada", 1),
-                timeout=timeout,
-                write_timeout=0.1,  # Reducido para evitar bloqueos largos y liberar el lock más rápido
+                timeout=self._cfg_conexion.get("timeout", 2.0),
+                write_timeout=0.5,
             )
 
             self._modo_simulador = False
@@ -373,30 +372,32 @@ class SerialManager:
         Envía el comando 'Q' y verifica que la respuesta contenga la firma
         "speeduino". Luego envía 'F' para consultar la versión del protocolo.
 
+        Las lecturas se realizan fuera del lock usando una referencia local
+        al objeto serial para no bloquear el lock durante el timeout de lectura
+        y evitar impedir que desconectar() pueda actuar.
+
         Returns:
             True si el handshake fue exitoso, False en caso contrario.
         """
         try:
             timeout_handshake = self._cfg_conexion.get("timeout_handshake", 2.0)
 
+            # Paso 1: Limpiar buffer y enviar 'Q', capturando referencia local
+            ser = None
             with self._lock_serial:
                 if not (self._serial and self._serial.is_open):
                     logger.error("Puerto serial no disponible para handshake.")
                     return False
-
-                # Limpiar buffer antes del handshake
                 self._serial.reset_input_buffer()
-
-                # Paso 1: Enviar 'Q' y verificar firma
                 logger.debug("Handshake: enviando 'Q'...")
                 self._serial.write(self._protocolo.construir_comando_handshake_q())
+                ser = self._serial
 
-            # Esperar ~10% del timeout antes de leer para dar tiempo a la ECU
-            time.sleep(timeout_handshake * 0.1)
-            with self._lock_serial:
-                if not (self._serial and self._serial.is_open):
-                    return False
-                respuesta_q = self._serial.read(32)
+            # Esperar al menos 500ms para dar tiempo a la ECU a responder
+            time.sleep(max(timeout_handshake * 0.25, 0.5))
+
+            # Leer con referencia local, fuera del lock
+            respuesta_q = ser.read(32)
 
             logger.debug(f"Respuesta 'Q': {respuesta_q!r}")
 
@@ -408,18 +409,19 @@ class SerialManager:
 
             logger.info(f"Firma recibida: {respuesta_q.decode('ascii', errors='replace').strip()!r}")
 
-            # Paso 2: Enviar 'F' para consultar versión del protocolo
+            # Paso 2: Enviar 'F' para consultar versión del protocolo,
+            # capturando referencia local
             with self._lock_serial:
                 if not (self._serial and self._serial.is_open):
                     return False
                 logger.debug("Handshake: enviando 'F'...")
                 self._serial.write(self._protocolo.construir_comando_handshake_f())
+                ser = self._serial
 
-            time.sleep(0.1)
-            with self._lock_serial:
-                if not (self._serial and self._serial.is_open):
-                    return False
-                respuesta_f = self._serial.read(4)
+            time.sleep(0.3)  # 300ms para dar tiempo a la respuesta F
+
+            # Leer con referencia local, fuera del lock
+            respuesta_f = ser.read(4)
 
             logger.info(
                 f"Versión de protocolo: {respuesta_f.decode('ascii', errors='replace').strip()!r}"
@@ -467,21 +469,23 @@ class SerialManager:
         while not self._evento_detener.is_set():
             inicio = time.time()
             try:
-                # 1. Verificar puerto y enviar comando (lock breve)
-                puerto_disponible = False
+                # 1. Verificar puerto y enviar comando (lock breve),
+                # capturando referencia local thread-safe
+                ser = None
                 with self._lock_serial:
                     if self._serial and self._serial.is_open:
                         self._serial.write(comando)
                         self.estadisticas.incrementar_enviados()
-                        puerto_disponible = True
+                        ser = self._serial  # referencia local thread-safe
 
-                if not puerto_disponible:
+                if ser is None:
                     # Puerto cerrado: esperar fuera del lock
                     time.sleep(0.01)
                     continue
 
-                # 2. Leer header (3 bytes) con lectura bloqueante (sin lock)
-                header = self._serial.read(3)
+                # 2. Leer header (3 bytes) con lectura bloqueante (sin lock,
+                # usando referencia local para evitar race condition)
+                header = ser.read(3)
 
                 if len(header) < 3:
                     # Timeout leyendo header: limpiar buffer y reintentar
@@ -510,7 +514,7 @@ class SerialManager:
                 bytes_needed = (
                     self._protocolo.calcular_tamano_respuesta_esperada(length) - 3
                 )
-                resto = self._serial.read(bytes_needed)
+                resto = ser.read(bytes_needed)
 
                 if len(resto) < bytes_needed:
                     logger.warning(
