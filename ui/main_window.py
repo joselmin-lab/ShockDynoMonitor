@@ -43,6 +43,7 @@ from core.alarm_manager import AlarmManager, Alarma
 from ui.dashboard_widget import DashboardWidget
 from ui.graphs_widget import GraphsWidget
 from ui.config_dialog import ConfigDialog
+from ui.calibration_dialog import CalibrationDialog
 from utils.config_manager import ConfigManager
 
 # Logger del módulo
@@ -203,6 +204,9 @@ class MainWindow(QMainWindow):
         self._conectado = False
         self._logging_activo = False
 
+        # Último dato recibido (para calibración)
+        self._ultimo_dato: Optional[ShockDynoData] = None
+
         # Construir UI
         self._construir_ui()
 
@@ -302,6 +306,25 @@ class MainWindow(QMainWindow):
         self._btn_log.setEnabled(False)
         self._btn_log.clicked.connect(self._accion_toggle_log)
         toolbar.addWidget(self._btn_log)
+
+        toolbar.addSeparator()
+
+        # Botón Calibración (solo activo cuando está conectado)
+        self._btn_calibrar = QPushButton("⚖ Calibrar")
+        self._btn_calibrar.setEnabled(False)
+        self._btn_calibrar.setStyleSheet(
+            "QPushButton { background: #225599; color: #fff; border: none; "
+            "border-radius: 4px; padding: 5px 12px; font-weight: bold; } "
+            "QPushButton:hover { background: #3366bb; } "
+            "QPushButton:disabled { background: #555; color: #888; }"
+        )
+        self._btn_calibrar.setToolTip(
+            "Calibrar sensores: tarar fuerza, ajustar rango de recorrido y temperatura."
+        )
+        self._btn_calibrar.clicked.connect(self._abrir_calibracion)
+        toolbar.addWidget(self._btn_calibrar)
+
+        toolbar.addSeparator()
 
         # Botón limpiar gráficas
         btn_limpiar = QPushButton("🗑 Limpiar")
@@ -417,6 +440,7 @@ class MainWindow(QMainWindow):
             self._btn_conectar.setEnabled(False)
             self._btn_desconectar.setEnabled(True)
             self._btn_log.setEnabled(True)
+            self._btn_calibrar.setEnabled(True)
             self._accion_conectar_menu.setEnabled(False)
             self._accion_desconectar_menu.setEnabled(True)
             self._combo_puertos.setEnabled(False)
@@ -452,6 +476,7 @@ class MainWindow(QMainWindow):
         self._btn_conectar.setEnabled(True)
         self._btn_desconectar.setEnabled(False)
         self._btn_log.setEnabled(False)
+        self._btn_calibrar.setEnabled(False)
         self._accion_conectar_menu.setEnabled(True)
         self._accion_desconectar_menu.setEnabled(False)
         self._combo_puertos.setEnabled(True)
@@ -545,6 +570,9 @@ class MainWindow(QMainWindow):
         if not dato.valido:
             return
 
+        # Guardar último dato para calibración y otras funciones
+        self._ultimo_dato = dato
+
         # Verificar alarmas
         alarmas_activas: List[Alarma] = self._alarm_manager.verificar_alarmas(dato)
 
@@ -566,6 +594,36 @@ class MainWindow(QMainWindow):
         else:
             self._lbl_alarmas.setText("Alarmas: OK")
             self._lbl_alarmas.setStyleSheet("color: #00cc44;")
+
+    # ─── Calibración de sensores ───────────────────────────────────────────
+
+    def _abrir_calibracion(self) -> None:
+        """
+        Abre el diálogo de calibración de sensores.
+
+        Pasa el último dato recibido y un callback para obtener el dato
+        más reciente en el momento en que el usuario pulse un botón de captura.
+        El diálogo es modal. Si el usuario acepta, la nueva calibración se
+        aplica inmediatamente al parser del SerialManager y se guarda en la
+        configuración.
+        """
+        dialogo = CalibrationDialog(
+            config=self._config,
+            ultimo_dato=self._ultimo_dato,
+            callback_lectura=lambda: self._ultimo_dato,
+            parent=self,
+        )
+        if dialogo.exec_():
+            nueva_config = dialogo.obtener_config_actualizada()
+            self._config = nueva_config
+
+            # Aplicar calibración al parser en tiempo real
+            self._serial_manager.actualizar_calibracion(nueva_config)
+
+            # Guardar en disco (también actualiza _config_actual internamente)
+            self._config_manager.guardar_config(nueva_config)
+
+            logger.info("Calibración aplicada y guardada.")
 
     def _actualizar_status_bar(self) -> None:
         """
