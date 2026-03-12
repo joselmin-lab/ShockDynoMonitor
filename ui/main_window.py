@@ -7,7 +7,6 @@ toolbar, menú y status bar. Coordina todos los componentes de la UI.
 
 
 import logging
-import time
 from typing import Optional
 
 from PyQt5.QtWidgets import (
@@ -18,7 +17,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import pyqtSignal, QTimer, Qt
 from PyQt5.QtGui import QIcon
 
-from core.speeduino_protocol import SpeeduinoResponse
 from core.data_parser import ShockDynoData
 from ui.dashboard_widget import DashboardWidget
 from ui.graphs_widget import GraphsWidget
@@ -240,7 +238,7 @@ class MainWindow(QMainWindow):
         logger.info(f"Intentando conectar a: {puerto}")
         
         # Configurar callback ANTES de conectar
-        self.serial_manager.data_callback = self._on_data_received
+        self.serial_manager._callback_datos = self._on_data_received
         
         # Intentar conectar
         try:
@@ -292,8 +290,8 @@ class MainWindow(QMainWindow):
         
         try:
             # Detener logging si está activo
-            if self.data_logger and self.data_logger.activo:
-                self.data_logger.stop()
+            if self.data_logger and self.data_logger.esta_activo:
+                self.data_logger.detener()
             
             # Desconectar serial manager
             self.serial_manager.desconectar()
@@ -318,7 +316,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Error al desconectar: {e}", exc_info=True)
     
-    def _on_data_received(self, respuesta: SpeeduinoResponse):
+    def _on_data_received(self, datos: ShockDynoData):
         """
         Callback invocado desde thread del serial manager.
         
@@ -326,25 +324,18 @@ class MainWindow(QMainWindow):
         Usar signal para thread-safe communication.
         
         Args:
-            respuesta: Respuesta Speeduino con payload
+            datos: Datos parseados del banco de pruebas (ShockDynoData)
         """
-        if not respuesta.is_valid:
-            logger.warning("Respuesta con CRC inválido, ignorando.")
+        if not datos.valido:
+            logger.warning("Datos inválidos, ignorando.")
             return
         
         try:
-            # Parsear datos
-            timestamp = time.time()
-            datos = self.data_parser.parse(respuesta.payload, timestamp)
+            # Guardar último dato para calibración
+            self.ultimo_dato = datos
             
-            if datos:
-                # Guardar último dato para calibración
-                self.ultimo_dato = datos
-                
-                # Emitir signal para actualizar UI (thread-safe)
-                self.datos_recibidos_signal.emit(datos)
-            else:
-                logger.warning("Parser retornó None - payload inválido")
+            # Emitir signal para actualizar UI (thread-safe)
+            self.datos_recibidos_signal.emit(datos)
         
         except Exception as e:
             logger.error(f"Error en callback de datos: {e}", exc_info=True)
@@ -375,8 +366,8 @@ class MainWindow(QMainWindow):
                 self.data_buffer.push(datos)
             
             # Logging si está activo
-            if self.data_logger and self.data_logger.activo:
-                self.data_logger.log(datos)
+            if self.data_logger and self.data_logger.esta_activo:
+                self.data_logger.registrar_dato(datos)
             
             # Verificar alarmas
             if self.alarm_manager:
@@ -419,7 +410,7 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            self.data_logger.start()
+            self.data_logger.iniciar()
             
             self.btn_iniciar_log.setEnabled(False)
             self.btn_detener_log.setEnabled(True)
@@ -428,7 +419,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Logging Iniciado",
-                f"Datos guardándose en:\n{self.data_logger.archivo_actual}"
+                f"Datos guardándose en:\n{self.data_logger.ruta_archivo_actual}"
             )
         
         except Exception as e:
@@ -445,8 +436,8 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            archivo = self.data_logger.archivo_actual
-            self.data_logger.stop()
+            archivo = self.data_logger.ruta_archivo_actual
+            self.data_logger.detener()
             
             self.btn_iniciar_log.setEnabled(True)
             self.btn_detener_log.setEnabled(False)
