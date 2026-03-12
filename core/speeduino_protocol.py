@@ -17,13 +17,21 @@ Estructura del comando TX Read Page ('p' / 0x70):
     Byte 3:    0x00       → CanID
     Byte 4:    0x01       → Page (página 1 = datos en tiempo real)
     Bytes 5-6: 0x00 0x00  → Offset (16-bit little-endian)
-    Bytes 7-8: 0x79 0x00  → Size (16-bit little-endian, 121 bytes)
+    Bytes 7-8: 0x79 0x00  → Size (16-bit little-endian, 121 bytes solicitados)
     Bytes 9-12: CRC32 little-endian de los bytes 0-8
 
 Estructura de la respuesta RX:
     Bytes 0-2: Header (00 XX 00, donde XX es el length)
-    Bytes 3-N: Payload (121/122 bytes de datos de sensores)
+    Bytes 3-N: Payload (122 bytes de datos de sensores)
     Bytes N+1-N+4: CRC32 little-endian
+
+Nota sobre el tamaño del payload:
+    El comando TX solicita 121 bytes (size=0x79), pero la ECU Speeduino
+    responde siempre con 122 bytes (0x7A) de payload. El primer byte
+    adicional es el contador de secuencia (secCounter). El frame completo
+    es: 3 (header) + 122 (payload) + 4 (CRC) = 129 bytes.
+    Esto es comportamiento conocido de Speeduino y está validado en la
+    captura del 2026-03-12: header siempre es 00 7A 00.
 """
 
 import binascii
@@ -61,7 +69,7 @@ class SpeeduinoProtocol:
     COMANDO_HANDSHAKE_F = 0x46      # Comando 'F' de handshake (consulta de versión)
     HEADER_BYTE_0 = 0x00             # Primer byte del header TX/RX
     HEADER_TX_LENGTH = 0x01          # Length del payload TX legacy (1 byte)
-    LONGITUD_PAYLOAD_ESPERADA = 121  # Bytes de payload solicitados en read_page
+    LONGITUD_PAYLOAD_ESPERADA = 122  # Bytes de payload que la ECU envía en read_page
 
     # Parámetros por defecto del comando Read Page (validados en captura 2026-03-12)
     READ_PAGE_CAN_ID = 0x00   # CanID (0 = local)
@@ -233,10 +241,11 @@ class SpeeduinoProtocol:
         El header esperado tiene el formato: 00 XX 00
         Donde XX es el length del payload en bytes.
 
-        Nota: La ECU reporta 122 bytes (0x7A) en el header, pero el frame
-        total es de 128 bytes (3 header + 121 payload + 4 CRC). El byte
-        extra nunca llega, por lo que se corrige el length a 121 cuando
-        el header indica 122.
+        Nota: La ECU Speeduino responde siempre con 122 bytes (0x7A) de payload
+        aunque el comando TX solicite solo 121 bytes. El primer byte adicional
+        es el contador de secuencia (secCounter). Esto está validado en la
+        captura real del 2026-03-12: header siempre es ``00 7A 00``.
+        El frame completo es: 3 (header) + 122 (payload) + 4 (CRC) = 129 bytes.
 
         Args:
             datos: Bytes recibidos (mínimo 3 bytes de header).
@@ -249,9 +258,9 @@ class SpeeduinoProtocol:
         Ejemplo::
 
             protocolo = SpeeduinoProtocol()
-            # Respuesta real: 00 7A 00 ...
+            # Respuesta real de la ECU: 00 7A 00 ...
             valido, length = protocolo.validar_header_respuesta(bytes([0x00, 0x7A, 0x00]))
-            # valido == True, length == 121  (corregido de 122)
+            # valido == True, length == 122  (0x7A = 122, sin corrección)
         """
         if len(datos) < self.TAMANO_HEADER_RX:
             logger.warning(
@@ -272,11 +281,9 @@ class SpeeduinoProtocol:
             )
             return False, 0
 
-        # La ECU reporta 122 bytes (0x7A) pero el frame real contiene solo
-        # 121 bytes de payload. Corregir para evitar esperar un byte que
-        # nunca llega y que cause un timeout indefinido.
-        if length == 0x7A:
-            length = 121
+        if length == 0:
+            logger.warning("Header inválido: length=0")
+            return False, 0
 
         logger.debug(f"Header válido: length={length} bytes")
         return True, length
