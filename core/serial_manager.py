@@ -2,21 +2,24 @@
 Módulo: serial_manager.py
 Descripción: Gestión de la conexión serial con la ECU Speeduino.
 
-Implementa dos threads:
-  - _hilo_tx: Envía el comando Read Page ('r' / 0x72) cada 50ms (20Hz).
-  - _hilo_rx: Lee y parsea las respuestas de la ECU.
+Implementa un único hilo de comunicación síncrono (Master-Slave):
+  - _hilo_comunicacion: Realiza el ciclo completo enviar → leer → procesar
+    cada 50ms (20Hz). Elimina la competencia por locks entre hilos TX y RX.
 
 Secuencia de conexión:
   1. Abrir puerto serial.
   2. Esperar delay de inicialización.
   3. Realizar handshake: enviar 'Q' → verificar firma "speeduino", enviar 'F'.
-  4. Iniciar threads TX/RX.
+  4. Iniciar hilo de comunicación.
 
 También incluye un modo SIMULADOR que genera datos aleatorios realistas
 sin necesidad de hardware real, útil para desarrollo y testing.
 
 Threading:
-  - Se usa threading.Lock para proteger el acceso a recursos compartidos.
+  - El hilo de comunicación es el único que accede al puerto serial durante
+    el polling, eliminando la necesidad de un Lock para ese propósito.
+  - Se mantiene threading.Lock solo para proteger el cierre del puerto desde
+    el hilo principal (desconectar).
   - Los threads son daemons (se limpian automáticamente al cerrar la app).
 """
 
@@ -42,10 +45,6 @@ logger = logging.getLogger(__name__)
 
 # Nombre especial para el modo simulador
 NOMBRE_SIMULADOR = "SIMULADOR"
-
-# Mínimo tiempo de pausa al final del ciclo TX para evitar inanición del hilo RX.
-# Fuerza un yield del GIL para que el hilo RX pueda adquirir el lock serial.
-_MIN_TX_YIELD_SLEEP = 0.005  # 5ms
 
 
 class EstadisticasComunicacion:
@@ -122,9 +121,9 @@ class SerialManager:
     """
     Gestiona la conexión serial con la ECU Speeduino.
 
-    Coordina dos threads:
-      - Thread TX: Envía comando Read Page ('r' / 0x72) cada 50ms.
-      - Thread RX: Lee respuestas y parsea datos.
+    Usa un único hilo de comunicación síncrono (Master-Slave) que envía el
+    comando Read Page ('r' / 0x72) y lee la respuesta en el mismo ciclo.
+    Esto elimina la competencia por locks entre hilos independientes.
 
     Realiza handshake automático ('Q' → firma, 'F' → versión) antes de
     iniciar el polling de datos. Soporta modo SIMULADOR para testing sin
@@ -173,9 +172,8 @@ class SerialManager:
         # Puerto serial (solo en modo real)
         self._serial: Optional[serial.Serial] = None
 
-        # Threads de comunicación
-        self._hilo_tx: Optional[threading.Thread] = None
-        self._hilo_rx: Optional[threading.Thread] = None
+        # Hilo de comunicación síncrono (envío + recepción en un solo ciclo)
+        self._hilo_comunicacion: Optional[threading.Thread] = None
         self._hilo_simulador: Optional[threading.Thread] = None
 
         # Evento para detener threads
@@ -359,7 +357,7 @@ class SerialManager:
         logger.info("Delay de inicialización completado. Realizando handshake...")
         if self._realizar_handshake():
             logger.info("Handshake exitoso. Iniciando comunicación.")
-            self._arrancar_threads_tx_rx()
+            self._arrancar_hilo_comunicacion()
         else:
             logger.error(
                 "Handshake fallido: no se recibió firma de Speeduino. "
@@ -431,109 +429,81 @@ class SerialManager:
             logger.error(f"Error durante handshake: {e}")
             return False
 
-    def _arrancar_threads_tx_rx(self) -> None:
+    def _arrancar_hilo_comunicacion(self) -> None:
         """
-        Arranca los threads TX y RX para comunicación bidireccional.
+        Arranca el hilo único de comunicación síncrona (Master-Slave).
 
-        Thread TX: Envía comando Read Page ('r' / 0x72) cada 50ms.
-        Thread RX: Lee respuestas y las parsea.
+        El hilo realiza el ciclo completo: enviar comando Read Page,
+        leer respuesta y procesar datos, cada 50ms (20Hz).
         """
-        self._hilo_tx = threading.Thread(
-            target=self._worker_tx,
-            name="TxThread",
+        self._hilo_comunicacion = threading.Thread(
+            target=self._worker_comunicacion,
+            name="ComunicacionThread",
             daemon=True,
         )
-        self._hilo_rx = threading.Thread(
-            target=self._worker_rx,
-            name="RxThread",
-            daemon=True,
-        )
-        self._hilo_tx.start()
-        self._hilo_rx.start()
-        logger.debug("Threads TX y RX iniciados.")
+        self._hilo_comunicacion.start()
+        logger.debug("Hilo de comunicación iniciado.")
 
-    def _worker_tx(self) -> None:
+    def _worker_comunicacion(self) -> None:
         """
-        Worker del thread de transmisión (TX).
+        Worker del hilo de comunicación síncrona (Master-Slave).
 
-        Envía el comando Read Page ('r' / 0x72 con CRC32) cada 50ms.
-        Solicita la página 0x30, offset 0, tamaño 121 bytes, tal como
-        fue validado en la captura de TunerStudio del 2026-03-12.
-        Se ejecuta hasta que _evento_detener sea señalado.
+        Realiza el ciclo completo en cada iteración:
+          1. Enviar comando Read Page ('r' / 0x72 con CRC32).
+          2. Leer respuesta del puerto serial.
+          3. Procesar datos recibidos.
+          4. Dormir el tiempo restante para mantener 20Hz.
+
+        Al ser el único hilo que accede al puerto durante el polling,
+        no se necesita Lock para proteger las operaciones de envío/recepción.
+        El Lock solo se consulta brevemente para detectar si el puerto sigue
+        abierto (protección frente a desconectar() desde el hilo principal).
         """
         comando = self._protocolo.construir_comando_read_page()
-        logger.debug(f"Comando TX listo: {comando.hex(' ').upper()}")
+        logger.debug(f"Comando listo: {comando.hex(' ').upper()}")
+
+        buffer_rx = bytearray()
 
         while not self._evento_detener.is_set():
             inicio = time.time()
             try:
-                if self._lock_serial.acquire(timeout=1.0):
-                    try:
-                        if self._serial and self._serial.is_open:
-                            self._serial.write(comando)
-                            self.estadisticas.incrementar_enviados()
-                    finally:
-                        self._lock_serial.release()
-                else:
-                    logger.warning("Timeout esperando lock serial en TX")
-            except Exception as e:
-                logger.error(f"Error en TX: {e}")
-
-            # Esperar el tiempo restante del intervalo de polling
-            transcurrido = time.time() - inicio
-            tiempo_espera = max(0, self._intervalo - transcurrido)
-
-            # Anti-starvation: Si el ciclo TX consumió casi todo el intervalo
-            # (tiempo_espera cercano a 0), dormir un mínimo para forzar un
-            # yield del GIL y dar oportunidad al hilo RX de adquirir el lock.
-            if tiempo_espera < _MIN_TX_YIELD_SLEEP:
-                time.sleep(_MIN_TX_YIELD_SLEEP)
-
-            self._evento_detener.wait(tiempo_espera)
-
-    def _worker_rx(self) -> None:
-        """
-        Worker del thread de recepción (RX).
-
-        Lee bytes del puerto serial, detecta el header de respuesta (00 XX 00),
-        acumula el payload completo y verifica el CRC32.
-        Cuando recibe un mensaje válido, parsea los datos y llama al callback.
-        """
-        buffer_rx = bytearray()
-
-        while not self._evento_detener.is_set():
-            try:
+                # Verificar puerto, enviar y leer bajo el lock para evitar
+                # que desconectar() cierre el puerto entre operaciones.
                 bytes_disponibles = 0
-                if self._lock_serial.acquire(timeout=1.0):
-                    try:
-                        if not (self._serial and self._serial.is_open):
-                            time.sleep(0.01)
-                            continue
+                nuevos_bytes = b""
+                with self._lock_serial:
+                    if not (self._serial and self._serial.is_open):
+                        # Puerto no disponible: dormir fuera del lock (abajo)
+                        bytes_disponibles = -1
+                    else:
+                        # 1. Enviar comando
+                        self._serial.write(comando)
+                        self.estadisticas.incrementar_enviados()
+
+                        # 2. Leer respuesta disponible en el buffer del puerto
                         bytes_disponibles = self._serial.in_waiting
-                    finally:
-                        self._lock_serial.release()
-                else:
-                    logger.warning("Timeout esperando lock serial en RX")
+                        if bytes_disponibles > 0:
+                            nuevos_bytes = self._serial.read(bytes_disponibles)
+
+                if bytes_disponibles < 0:
+                    # Puerto cerrado: esperar antes del siguiente ciclo
                     time.sleep(0.01)
                     continue
 
+                # 3. Procesar mensajes completos del buffer (fuera del lock)
                 if bytes_disponibles > 0:
-                    if self._lock_serial.acquire(timeout=1.0):
-                        try:
-                            nuevos_bytes = self._serial.read(bytes_disponibles)
-                        finally:
-                            self._lock_serial.release()
-                        buffer_rx.extend(nuevos_bytes)
-
-                        # Intentar parsear mensajes completos del buffer
-                        buffer_rx = self._procesar_buffer(buffer_rx)
-                else:
-                    time.sleep(0.005)  # 5ms de espera si no hay datos
+                    buffer_rx.extend(nuevos_bytes)
+                    buffer_rx = self._procesar_buffer(buffer_rx)
 
             except Exception as e:
-                logger.error(f"Error en RX: {e}")
+                logger.error(f"Error en comunicación: {e}")
                 self.estadisticas.incrementar_errores_timeout()
                 time.sleep(0.1)
+
+            # 4. Dormir el tiempo restante del intervalo para mantener 20Hz
+            transcurrido = time.time() - inicio
+            tiempo_espera = max(0, self._intervalo - transcurrido)
+            self._evento_detener.wait(tiempo_espera)
 
     def _procesar_buffer(self, buffer: bytearray) -> bytearray:
         """
@@ -721,7 +691,7 @@ class SerialManager:
         self._evento_detener.set()
 
         # Esperar a que los threads terminen (máximo 2 segundos cada uno)
-        for hilo in [self._hilo_tx, self._hilo_rx, self._hilo_simulador]:
+        for hilo in [self._hilo_comunicacion, self._hilo_simulador]:
             if hilo and hilo.is_alive():
                 hilo.join(timeout=2.0)
 
@@ -737,8 +707,7 @@ class SerialManager:
 
         self._conectado = False
         self._modo_simulador = False
-        self._hilo_tx = None
-        self._hilo_rx = None
+        self._hilo_comunicacion = None
         self._hilo_simulador = None
 
         logger.info("Desconectado correctamente.")
