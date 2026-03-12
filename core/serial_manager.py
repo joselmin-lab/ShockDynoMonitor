@@ -305,6 +305,7 @@ class SerialManager:
                 parity=self._cfg_conexion.get("paridad", "N"),
                 stopbits=self._cfg_conexion.get("bits_parada", 1),
                 timeout=timeout,
+                write_timeout=0.5,  # Evita bloqueo indefinido en write() si el buffer se llena
             )
 
             self._modo_simulador = False
