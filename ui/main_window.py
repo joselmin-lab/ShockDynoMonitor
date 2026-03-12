@@ -12,7 +12,7 @@ from typing import Optional
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QPushButton, QComboBox, QLabel,
-    QStatusBar, QMessageBox, QToolBar, QAction, QMenu
+    QStatusBar, QMessageBox, QToolBar, QAction, QMenu, QDialog
 )
 from PyQt5.QtCore import pyqtSignal, QTimer, Qt
 from PyQt5.QtGui import QIcon
@@ -477,7 +477,35 @@ class MainWindow(QMainWindow):
                 callback_lectura=None,  # Opcional: puedes pasar un callback si quieres
                 parent=self
             )
-            dialog.exec_()
+
+            if dialog.exec_() == QDialog.Accepted:
+                # Get updated configuration from dialog
+                nueva_config = dialog.obtener_config_actualizada()
+
+                # Update local config
+                self.config = nueva_config
+
+                saved = False
+                # Save to config file
+                if self.config_manager:
+                    self.config_manager.guardar_config(nueva_config)
+                    saved = True
+                    logger.info("Calibración guardada en archivo.")
+
+                # Apply to SerialManager for immediate effect
+                if self.serial_manager:
+                    self.serial_manager.actualizar_calibracion(nueva_config)
+                    logger.info("Calibración aplicada al SerialManager.")
+
+                # Show success message only when saved
+                if saved:
+                    QMessageBox.information(
+                        self,
+                        "Calibración Aplicada",
+                        "La calibración se ha guardado y aplicado correctamente."
+                    )
+                else:
+                    logger.warning("config_manager no disponible; calibración aplicada pero no guardada en disco.")
         
         except Exception as e:
             logger.error(f"Error abriendo diálogo de calibración: {e}", exc_info=True)
@@ -490,13 +518,12 @@ class MainWindow(QMainWindow):
     def abrir_configuracion(self):
         """Abrir diálogo de configuración."""
         try:
-            dialog = ConfigDialog(config=self.config, parent=self)
+            dialog = ConfigDialog(config_manager=self.config_manager, parent=self)
             
             if dialog.exec_():
-                # Usuario aceptó, guardar configuración
-                if self.config_manager:
-                    self.config_manager.save_config(self.config)
-                    logger.info("Configuración guardada.")
+                # ConfigDialog already saved to file; update local config reference
+                self.config = dialog.obtener_config()
+                logger.info("Configuración guardada.")
         
         except Exception as e:
             logger.error(f"Error abriendo configuración: {e}", exc_info=True)
