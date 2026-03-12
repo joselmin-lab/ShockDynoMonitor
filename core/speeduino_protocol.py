@@ -76,6 +76,8 @@ class SpeeduinoProtocol:
 
     def __init__(self) -> None:
         """Inicializa el protocolo Speeduino."""
+        self.TAMANO_HEADER_RX = SpeeduinoProtocol.TAMANO_HEADER_RX
+        self.TAMANO_CRC = SpeeduinoProtocol.TAMANO_CRC
         logger.debug("SpeeduinoProtocol inicializado.")
 
     def calcular_crc32(self, datos: bytes) -> int:
