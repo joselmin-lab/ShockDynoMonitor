@@ -5,6 +5,7 @@ Este módulo contiene la interfaz gráfica principal con tabs,
 toolbar, menú y status bar. Coordina todos los componentes de la UI.
 """
 
+
 import logging
 import time
 from typing import Optional
@@ -211,7 +212,7 @@ class MainWindow(QMainWindow):
         if not self.serial_manager:
             return
         
-        puertos = self.serial_manager.listar_puertos()
+        puertos = self.serial_manager.listar_puertos_disponibles()
         self.combo_puerto.clear()
         self.combo_puerto.addItems(puertos)
         
@@ -261,7 +262,8 @@ class MainWindow(QMainWindow):
                 self.label_estado.setText("🟢 Conectado")
                 self.label_estado.setStyleSheet("color: green; font-weight: bold;")
                 
-                logger.info(f"Conectado a {puerto} ({self.serial_manager.baudrate})")
+                baudrate = self.config.get('conexion', {}).get('baudrate', 115200)
+                logger.info(f"Conectado a {puerto} ({baudrate} baud)")
             else:
                 QMessageBox.critical(
                     self,

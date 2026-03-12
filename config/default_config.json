@@ -71,7 +71,11 @@
     "incluir_timestamp_ms": true,
     "separador": ","
   },
-  "ui": {
+   "ui": {
+    "window_title": "Shock Dyno Monitor",
+    "version": "1.0.0",
+    "window_width": 1200,
+    "window_height": 800,
     "tema": "oscuro",
     "actualizacion_ms": 50,
     "buffer_graficas_segundos": 30,
@@ -79,6 +83,7 @@
     "ventana_ancho": 1200,
     "ventana_alto": 800
   },
+
   "simulador": {
     "fuerza_min": 100.0,
     "fuerza_max": 1500.0,

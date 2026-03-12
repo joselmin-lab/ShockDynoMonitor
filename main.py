@@ -38,16 +38,17 @@ def main():
     try:
         # Cargar configuración
         config_manager = ConfigManager()
-        config = config_manager.cargar_configuracion()
+        config = config_manager.cargar_config()  # ← CORREGIDO AQUÍ
         logger.info("Configuración cargada correctamente.")
         
         # Inicializar componentes core
         protocol = SpeeduinoProtocol()
         data_parser = SpeeduinoDataParser(config)
-        serial_manager = SerialManager(protocol, config)
+        serial_manager = SerialManager(config, protocol)
         data_logger = DataLogger(config)
         alarm_manager = AlarmManager(config)
-        data_buffer = DataBuffer(config)
+        capacidad_buffer = config.get('data_buffer', {}).get('max_size', 600)
+        data_buffer = DataBuffer(capacidad_maxima=capacidad_buffer)
         
         # Crear aplicación Qt
         app = QApplication(sys.argv)
