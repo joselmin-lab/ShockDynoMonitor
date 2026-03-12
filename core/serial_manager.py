@@ -122,7 +122,8 @@ class SerialManager:
     Gestiona la conexión serial con la ECU Speeduino.
 
     Usa un único hilo de comunicación síncrono (Master-Slave) que envía el
-    comando Read Page ('r' / 0x72) y lee la respuesta en el mismo ciclo.
+    comando Read Page ('p' / 0x70) y lee la respuesta en el mismo ciclo
+    mediante lecturas bloqueantes (sin in_waiting).
     Esto elimina la competencia por locks entre hilos independientes.
 
     Realiza handshake automático ('Q' → firma, 'F' → versión) antes de
@@ -448,59 +449,102 @@ class SerialManager:
         """
         Worker del hilo de comunicación síncrona (Master-Slave).
 
-        Realiza el ciclo completo en cada iteración:
-          1. Enviar comando Read Page ('r' / 0x72 con CRC32).
-          2. Leer respuesta del puerto serial.
-          3. Procesar datos recibidos.
-          4. Dormir el tiempo restante para mantener 20Hz.
+        Realiza el ciclo completo en cada iteración usando lecturas bloqueantes:
+          1. Verificar puerto y enviar comando (bajo lock, brevemente).
+          2. ser.read(3) bloqueante para obtener el header.
+          3. Si el header es inválido o incompleto, limpiar buffer y reintentar.
+          4. Calcular bytes restantes y hacer ser.read(bytes_needed) bloqueante.
+          5. Combinar y parsear la respuesta completa.
+          6. Dormir el tiempo restante para mantener 20Hz.
 
-        Al ser el único hilo que accede al puerto durante el polling,
-        no se necesita Lock para proteger las operaciones de envío/recepción.
-        El Lock solo se consulta brevemente para detectar si el puerto sigue
-        abierto (protección frente a desconectar() desde el hilo principal).
+        Las lecturas bloqueantes se realizan fuera del lock para no impedir
+        que desconectar() pueda actuar. El lock solo se toma brevemente para
+        el envío del comando y para detectar si el puerto sigue abierto.
         """
         comando = self._protocolo.construir_comando_read_page()
         logger.debug(f"Comando listo: {comando.hex(' ').upper()}")
 
-        buffer_rx = bytearray()
-
         while not self._evento_detener.is_set():
             inicio = time.time()
             try:
-                # Verificar puerto, enviar y leer bajo el lock para evitar
-                # que desconectar() cierre el puerto entre operaciones.
-                bytes_disponibles = 0
-                nuevos_bytes = b""
+                # 1. Verificar puerto y enviar comando (lock breve)
+                puerto_disponible = False
                 with self._lock_serial:
-                    if not (self._serial and self._serial.is_open):
-                        # Puerto no disponible: dormir fuera del lock (abajo)
-                        bytes_disponibles = -1
-                    else:
-                        # 1. Enviar comando
+                    if self._serial and self._serial.is_open:
                         self._serial.write(comando)
                         self.estadisticas.incrementar_enviados()
+                        puerto_disponible = True
 
-                        # 2. Leer respuesta disponible en el buffer del puerto
-                        bytes_disponibles = self._serial.in_waiting
-                        if bytes_disponibles > 0:
-                            nuevos_bytes = self._serial.read(bytes_disponibles)
-
-                if bytes_disponibles < 0:
-                    # Puerto cerrado: esperar antes del siguiente ciclo
+                if not puerto_disponible:
+                    # Puerto cerrado: esperar fuera del lock
                     time.sleep(0.01)
                     continue
 
-                # 3. Procesar mensajes completos del buffer (fuera del lock)
-                if bytes_disponibles > 0:
-                    buffer_rx.extend(nuevos_bytes)
-                    buffer_rx = self._procesar_buffer(buffer_rx)
+                # 2. Leer header (3 bytes) con lectura bloqueante (sin lock)
+                header = self._serial.read(3)
+
+                if len(header) < 3:
+                    # Timeout leyendo header: limpiar buffer y reintentar
+                    logger.warning(
+                        f"Timeout leyendo header: recibidos {len(header)}/3 bytes"
+                    )
+                    with self._lock_serial:
+                        if self._serial and self._serial.is_open:
+                            self._serial.reset_input_buffer()
+                    continue
+
+                # 3. Validar header
+                header_valido, length = self._protocolo.validar_header_respuesta(
+                    header
+                )
+                if not header_valido:
+                    logger.warning(
+                        f"Header inválido: {header.hex(' ').upper()}, limpiando buffer..."
+                    )
+                    with self._lock_serial:
+                        if self._serial and self._serial.is_open:
+                            self._serial.reset_input_buffer()
+                    continue
+
+                # 4. Calcular bytes restantes (payload + CRC) y leer bloqueante
+                bytes_needed = (
+                    self._protocolo.calcular_tamano_respuesta_esperada(length) - 3
+                )
+                resto = self._serial.read(bytes_needed)
+
+                if len(resto) < bytes_needed:
+                    logger.warning(
+                        f"Timeout leyendo payload: recibidos {len(resto)}/{bytes_needed} bytes"
+                    )
+                    with self._lock_serial:
+                        if self._serial and self._serial.is_open:
+                            self._serial.reset_input_buffer()
+                    continue
+
+                # 5. Combinar y parsear la respuesta completa
+                mensaje_completo = header + resto
+                valido, payload = self._protocolo.parsear_respuesta(mensaje_completo)
+
+                if valido and payload:
+                    self.estadisticas.incrementar_recibidos()
+                    datos = self._parser.parsear(payload)
+                    if datos.valido and self._callback_datos:
+                        try:
+                            self._callback_datos(datos)
+                        except Exception as e:
+                            logger.error(f"Error en callback de datos: {e}")
+                else:
+                    self.estadisticas.incrementar_errores_crc()
+                    logger.warning("Mensaje recibido con CRC inválido, descartando.")
 
             except Exception as e:
+                if self._evento_detener.is_set():
+                    break
                 logger.error(f"Error en comunicación: {e}")
                 self.estadisticas.incrementar_errores_timeout()
                 time.sleep(0.1)
 
-            # 4. Dormir el tiempo restante del intervalo para mantener 20Hz
+            # 6. Dormir el tiempo restante del intervalo para mantener 20Hz
             transcurrido = time.time() - inicio
             tiempo_espera = max(0, self._intervalo - transcurrido)
             self._evento_detener.wait(tiempo_espera)
