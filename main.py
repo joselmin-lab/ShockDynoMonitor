@@ -1,113 +1,84 @@
 """
-main.py - Punto de entrada de la aplicación Shock Dyno Monitor.
+Entry point de la aplicación Shock Dyno Monitor.
 
-Inicializa el logging de la aplicación, carga la configuración
-y lanza la ventana principal de PyQt5.
-
-Uso:
-    python main.py
-
-Requisitos:
-    pip install -r requirements.txt
-
-Plataforma:
-    Windows 10/11 con Python 3.11+
+Este módulo inicializa todos los componentes y lanza la interfaz gráfica.
 """
 
-import logging
 import sys
-import os
-
-# Asegurarse de que el directorio raíz del proyecto esté en el path de Python,
-# para que los imports relativos funcionen correctamente al ejecutar desde cualquier
-# directorio de trabajo.
-DIRECTORIO_RAIZ = os.path.dirname(os.path.abspath(__file__))
-if DIRECTORIO_RAIZ not in sys.path:
-    sys.path.insert(0, DIRECTORIO_RAIZ)
-
+import logging
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
 
 from utils.config_manager import ConfigManager
+from utils.data_buffer import DataBuffer
+from core.speeduino_protocol import SpeeduinoProtocol
+from core.serial_manager import SerialManager
+from core.data_parser import SpeeduinoDataParser
+from core.data_logger import DataLogger
+from core.alarm_manager import AlarmManager
 from ui.main_window import MainWindow
 
 
-def configurar_logging() -> None:
-    """
-    Configura el sistema de logging de la aplicación.
-
-    Envía los mensajes a consola (stdout) con formato:
-    [NIVEL] timestamp - nombre_modulo - mensaje
-
-    Los niveles van desde DEBUG (más detallado) hasta CRITICAL (solo errores críticos).
-    """
-    formato = "%(levelname)-8s %(asctime)s - %(name)s - %(message)s"
+def configurar_logging():
+    """Configurar sistema de logging."""
     logging.basicConfig(
         level=logging.DEBUG,
-        format=formato,
-        datefmt="%H:%M:%S",
-        stream=sys.stdout,
+        format='%(levelname)-8s %(asctime)s - %(name)s - %(message)s',
+        datefmt='%H:%M:%S'
     )
-    # Silenciar logs muy verbosos de módulos de terceros
-    logging.getLogger("PyQt5").setLevel(logging.WARNING)
-    logging.getLogger("pyqtgraph").setLevel(logging.WARNING)
 
 
-def main() -> None:
-    """
-    Función principal de la aplicación.
-
-    Flujo de inicialización:
-    1. Configurar el sistema de logging.
-    2. Crear la aplicación Qt (QApplication).
-    3. Cargar la configuración desde config/default_config.json.
-    4. Crear y mostrar la ventana principal.
-    5. Ejecutar el loop de eventos de Qt.
-
-    La aplicación se cierra cuando el usuario cierra la ventana principal
-    o presiona Ctrl+Q.
-    """
-    # Inicializar logging
+def main():
+    """Función principal."""
+    # Configurar logging
     configurar_logging()
+    
     logger = logging.getLogger(__name__)
     logger.info("Iniciando Shock Dyno Monitor...")
-
-    # Habilitar escalado de DPI alto para pantallas 4K/HiDPI (Windows)
-    if hasattr(Qt, "AA_EnableHighDpiScaling"):
-        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    if hasattr(Qt, "AA_UseHighDpiPixmaps"):
-        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-
-    # Crear la aplicación Qt
-    app = QApplication(sys.argv)
-    app.setApplicationName("Shock Dyno Monitor")
-    app.setApplicationVersion("1.0.0")
-    app.setOrganizationName("ShockDynoMonitor")
-
-    # Cargar configuración
+    
     try:
+        # Cargar configuración
         config_manager = ConfigManager()
-        config = config_manager.cargar_config()
+        config = config_manager.cargar_configuracion()
         logger.info("Configuración cargada correctamente.")
-    except Exception as e:
-        logger.error(f"Error al cargar configuración: {e}")
-        config = {}
-        config_manager = ConfigManager()
-
-    # Crear y mostrar la ventana principal
-    try:
-        ventana = MainWindow(config=config, config_manager=config_manager)
-        ventana.show()
+        
+        # Inicializar componentes core
+        protocol = SpeeduinoProtocol()
+        data_parser = SpeeduinoDataParser(config)
+        serial_manager = SerialManager(protocol, config)
+        data_logger = DataLogger(config)
+        alarm_manager = AlarmManager(config)
+        data_buffer = DataBuffer(config)
+        
+        # Crear aplicación Qt
+        app = QApplication(sys.argv)
+        app.setApplicationName("Shock Dyno Monitor")
+        app.setOrganizationName("ShockDyno")
+        
+        # Crear ventana principal
+        window = MainWindow(config=config)
+        
+        # Inyectar dependencias
+        window.config_manager = config_manager
+        window.serial_manager = serial_manager
+        window.data_parser = data_parser
+        window.data_logger = data_logger
+        window.alarm_manager = alarm_manager
+        window.data_buffer = data_buffer
+        
+        # Actualizar lista de puertos disponibles
+        window.actualizar_lista_puertos()
+        
+        # Mostrar ventana
+        window.show()
         logger.info("Ventana principal mostrada.")
+        
+        # Ejecutar aplicación
+        sys.exit(app.exec_())
+    
     except Exception as e:
-        logger.critical(f"Error fatal al iniciar la UI: {e}")
+        logger.critical(f"Error fatal al iniciar la UI: {e}", exc_info=True)
         sys.exit(1)
 
-    # Ejecutar el loop de eventos de Qt
-    codigo_salida = app.exec_()
-    logger.info(f"Aplicación terminada con código {codigo_salida}.")
-    sys.exit(codigo_salida)
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
