@@ -227,7 +227,7 @@ class SerialManager:
                 bytesize=self._cfg_conexion.get("bits_datos", 8),
                 parity=self._cfg_conexion.get("paridad", "N"),
                 stopbits=self._cfg_conexion.get("bits_parada", 1),
-                timeout=self._cfg_conexion.get("timeout", 2.0),
+                timeout=0.1,
                 write_timeout=0.5,
             )
 
