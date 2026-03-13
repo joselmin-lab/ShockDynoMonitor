@@ -1,4 +1,5 @@
 from collections import deque
+from typing import Optional
 
 import pyqtgraph as pg
 from PyQt5.QtWidgets import QTabWidget, QVBoxLayout, QWidget
@@ -32,41 +33,80 @@ class GraphsWidget(QWidget):
         # ── Tab 1: Fuerza vs Recorrido (hysteresis / Lissajous loop) ──────
         self._fuerza_data: deque[float] = deque(maxlen=_MAX_POINTS)
         self._recorrido_data: deque[float] = deque(maxlen=_MAX_POINTS)
-        pw_fvr = self._make_plot_widget("Fuerza vs Recorrido", "#00e5ff")
-        pw_fvr.setLabel("bottom", "Recorrido (mm)")
-        pw_fvr.setLabel("left", "Fuerza (N)")
+        self._pw_fvr = self._make_plot_widget("Fuerza vs Recorrido", "#00e5ff")
+        self._pw_fvr.setLabel("bottom", "Recorrido (mm)")
+        self._pw_fvr.setLabel("left", "Fuerza (N)")
         # Explicitly enable auto-range on both axes so the Y-axis can scale to thousands of
         # Newtons (e.g. a 2000 KG / ~20 000 N load cell) without being locked to a tiny range.
-        pw_fvr.enableAutoRange()
-        self._curve_fvr = pw_fvr.plot(pen=pg.mkPen("#00e5ff", width=2))
+        self._pw_fvr.enableAutoRange()
+        self._curve_fvr = self._pw_fvr.plot(pen=pg.mkPen("#00e5ff", width=2))
         tab1 = QWidget()
         tab1_layout = QVBoxLayout(tab1)
-        tab1_layout.addWidget(pw_fvr)
+        tab1_layout.addWidget(self._pw_fvr)
         self._tabs.addTab(tab1, "Fuerza vs Recorrido")
 
         # ── Tab 2: Temperaturas vs Tiempo ─────────────────────────────────
         self._temp_amo_data: deque[float] = deque(maxlen=_MAX_POINTS)
         self._temp_res_data: deque[float] = deque(maxlen=_MAX_POINTS)
-        pw_t = self._make_plot_widget("Temperaturas vs Tiempo", "#ff9100")
-        pw_t.setLabel("bottom", "Muestras")
-        pw_t.setLabel("left", "Temperatura (°C)")
-        pw_t.addLegend()
-        self._curve_temp_amo = pw_t.plot(pen=pg.mkPen("#ff9100", width=2), name="Amortiguador")
-        self._curve_temp_res = pw_t.plot(pen=pg.mkPen("#ffee58", width=2), name="Reservorio")
+        self._pw_temp = self._make_plot_widget("Temperaturas vs Tiempo", "#ff9100")
+        self._pw_temp.setLabel("bottom", "Muestras")
+        self._pw_temp.setLabel("left", "Temperatura (°C)")
+        self._pw_temp.addLegend()
+        self._curve_temp_amo = self._pw_temp.plot(pen=pg.mkPen("#ff9100", width=2), name="Amortiguador")
+        self._curve_temp_res = self._pw_temp.plot(pen=pg.mkPen("#ffee58", width=2), name="Reservorio")
         tab2 = QWidget()
         tab2_layout = QVBoxLayout(tab2)
-        tab2_layout.addWidget(pw_t)
+        tab2_layout.addWidget(self._pw_temp)
         self._tabs.addTab(tab2, "Temperaturas vs Tiempo")
 
         # ── Tab 3: Distancia vs Tiempo ────────────────────────────────────
-        pw_d = self._make_plot_widget("Distancia vs Tiempo", "#69ff47")
-        pw_d.setLabel("bottom", "Muestras")
-        pw_d.setLabel("left", "Recorrido (mm)")
-        self._curve_dist = pw_d.plot(pen=pg.mkPen("#69ff47", width=2))
+        self._pw_dist = self._make_plot_widget("Distancia vs Tiempo", "#69ff47")
+        self._pw_dist.setLabel("bottom", "Muestras")
+        self._pw_dist.setLabel("left", "Recorrido (mm)")
+        self._curve_dist = self._pw_dist.plot(pen=pg.mkPen("#69ff47", width=2))
         tab3 = QWidget()
         tab3_layout = QVBoxLayout(tab3)
-        tab3_layout.addWidget(pw_d)
+        tab3_layout.addWidget(self._pw_dist)
         self._tabs.addTab(tab3, "Distancia vs Tiempo")
+
+    # ------------------------------------------------------------------
+    def apply_graph_settings(self, settings: dict) -> None:
+        """Apply axis limits from *settings*. A value of None means auto-range for that axis."""
+        # ── Tab 1: Fuerza vs Recorrido ──
+        x_min: Optional[float] = settings.get("fvr_x_min")
+        x_max: Optional[float] = settings.get("fvr_x_max")
+        y_min: Optional[float] = settings.get("fvr_y_min")
+        y_max: Optional[float] = settings.get("fvr_y_max")
+
+        if x_min is not None and x_max is not None:
+            self._pw_fvr.setXRange(x_min, x_max, padding=0)
+        else:
+            self._pw_fvr.enableAutoRange(axis="x")
+
+        if y_min is not None and y_max is not None:
+            self._pw_fvr.setYRange(y_min, y_max, padding=0)
+        else:
+            self._pw_fvr.enableAutoRange(axis="y")
+
+        # ── Tab 2: Temperaturas vs Tiempo ──
+        temp_y_min: Optional[float] = settings.get("temp_y_min")
+        temp_y_max: Optional[float] = settings.get("temp_y_max")
+
+        self._pw_temp.enableAutoRange(axis="x")
+        if temp_y_min is not None and temp_y_max is not None:
+            self._pw_temp.setYRange(temp_y_min, temp_y_max, padding=0)
+        else:
+            self._pw_temp.enableAutoRange(axis="y")
+
+        # ── Tab 3: Distancia vs Tiempo ──
+        dist_y_min: Optional[float] = settings.get("dist_y_min")
+        dist_y_max: Optional[float] = settings.get("dist_y_max")
+
+        self._pw_dist.enableAutoRange(axis="x")
+        if dist_y_min is not None and dist_y_max is not None:
+            self._pw_dist.setYRange(dist_y_min, dist_y_max, padding=0)
+        else:
+            self._pw_dist.enableAutoRange(axis="y")
 
     # ------------------------------------------------------------------
     def _make_plot_widget(self, title: str, title_color: str) -> pg.PlotWidget:
