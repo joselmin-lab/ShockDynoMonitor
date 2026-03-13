@@ -35,6 +35,9 @@ class GraphsWidget(QWidget):
         pw_fvr = self._make_plot_widget("Fuerza vs Recorrido", "#00e5ff")
         pw_fvr.setLabel("bottom", "Recorrido (mm)")
         pw_fvr.setLabel("left", "Fuerza (N)")
+        # Explicitly enable auto-range on both axes so the Y-axis can scale to thousands of
+        # Newtons (e.g. a 2000 KG / ~20 000 N load cell) without being locked to a tiny range.
+        pw_fvr.enableAutoRange()
         self._curve_fvr = pw_fvr.plot(pen=pg.mkPen("#00e5ff", width=2))
         tab1 = QWidget()
         tab1_layout = QVBoxLayout(tab1)

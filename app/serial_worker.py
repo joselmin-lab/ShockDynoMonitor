@@ -72,15 +72,21 @@ class SerialWorker(QThread):
         """Convert raw force value (0-1023 from AD623) to Newtons using tare + known-weight calibration.
 
         Formula: N = (raw - force_zero_raw) * (force_known_physical_n / (force_known_raw - force_zero_raw))
+
+        Explicit float casts guarantee precision even when raw deltas are tiny (e.g. 2-5 ADC
+        units for a 2000 KG load cell), regardless of whether the stored calibration values
+        are Python ints or floats.
         """
-        zero = cal.get("force_zero_raw", 512.0)
-        known_raw = cal.get("force_known_raw", 1023.0)
-        known_n = cal.get("force_known_physical_n", 100.0)
-        span = known_raw - zero
-        if span == 0:
+        zero = float(cal.get("force_zero_raw", 512.0))
+        known_raw = float(cal.get("force_known_raw", 1023.0))
+        known_n = float(cal.get("force_known_physical_n", 100.0))
+        span = known_raw - zero  # float subtraction; exact when values are integer-valued floats
+        if span == 0.0:
+            # Tare and known-weight capture are identical (user did not apply enough force to
+            # change the ADC integer).  Return 0 N to avoid ZeroDivisionError.
             return 0.0
         # Negative span is valid: it means raw decreases as force increases (reversed wiring).
-        return (raw - zero) * (known_n / span)
+        return (float(raw) - zero) * (known_n / span)
 
     def run(self):
         self._running = True
