@@ -423,9 +423,11 @@ class SerialManager:
                     logger.warning(
                         f"Timeout leyendo header: recibidos {len(header)}/3 bytes"
                     )
+                    self.estadisticas.incrementar_errores_timeout()
                     with self._lock_serial:
                         if self._serial and self._serial.is_open:
                             self._serial.reset_input_buffer()
+                    time.sleep(0.1)
                     continue
 
                 # 3. Validar header
@@ -453,9 +455,11 @@ class SerialManager:
                     logger.warning(
                         f"Timeout leyendo payload: recibidos {len(resto)}/{bytes_needed} bytes"
                     )
+                    self.estadisticas.incrementar_errores_timeout()
                     with self._lock_serial:
                         if self._serial and self._serial.is_open:
                             self._serial.reset_input_buffer()
+                    time.sleep(0.1)
                     continue
 
                 # 5. Combinar y parsear
