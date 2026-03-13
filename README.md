@@ -77,8 +77,8 @@ Basado en captura validada el 2026-03-12.
 - **ECU:** Speeduino 2025.01.4
 - **Baudrate:** 115200, 8N1
 - **Polling:** 50ms (20Hz)
-- **Comando:** `0x41` con CRC32 little-endian
-- **Respuesta:** Header `00 XX 00` + 128 bytes de payload + CRC32
+- **Comando:** `0x70` (Read Page) con `page=0x01`, offset=0, size=121, CRC32 big-endian
+- **Respuesta:** Header `00 XX 00` + 121 bytes de payload + CRC32
 
 ### Offsets de Payload (Estándar Speeduino firmware 2025.01 / currentStatus)
 

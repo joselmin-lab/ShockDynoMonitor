@@ -22,7 +22,7 @@
     "recorrido": {
       "nombre": "Recorrido",
       "unidad": "mm",
-      "offset_payload": 25,
+      "offset_payload": 24,
       "escala": 0.392157,
       "offset_valor": 0.0,
       "min_rango": 0,
