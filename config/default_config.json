@@ -6,14 +6,14 @@
     "paridad": "N",
     "bits_parada": 1,
     "timeout": 1.0,
-    "delay_conexion": 10,
+    "delay_conexion": 1,
     "intervalo_polling_ms": 50
   },
   "sensores": {
     "fuerza": {
       "nombre": "Fuerza",
       "unidad": "N",
-      "offset_payload": 1,
+      "offset_payload": 4,
       "escala": 0.5,
       "offset_valor": 0.0,
       "min_rango": 0,
@@ -22,7 +22,7 @@
     "recorrido": {
       "nombre": "Recorrido",
       "unidad": "mm",
-      "offset_payload": 2,
+      "offset_payload": 25,
       "escala": 0.392157,
       "offset_valor": 0.0,
       "min_rango": 0,
@@ -31,7 +31,7 @@
     "temp_amortiguador": {
       "nombre": "Temp Amortiguador",
       "unidad": "°C",
-      "offset_payload": 3,
+      "offset_payload": 7,
       "escala": 1.0,
       "offset_valor": -40.0,
       "min_rango": -40,
@@ -40,7 +40,7 @@
     "temp_reservorio": {
       "nombre": "Temp Reservorio",
       "unidad": "°C",
-      "offset_payload": 4,
+      "offset_payload": 6,
       "escala": 1.0,
       "offset_valor": -40.0,
       "min_rango": -40,
@@ -49,8 +49,8 @@
     "velocidad": {
       "nombre": "Velocidad",
       "unidad": "RPM",
-      "offset_payload_high": 5,
-      "offset_payload_low": 6,
+      "offset_payload_high": 15,
+      "offset_payload_low": 14,
       "escala": 1.0,
       "offset_valor": 0.0,
       "min_rango": 0,

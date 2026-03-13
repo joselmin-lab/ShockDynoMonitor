@@ -81,6 +81,16 @@ class SpeeduinoProtocol:
         logger.debug("Comando handshake Q construido.")
         return bytes([self.COMANDO_HANDSHAKE_Q])
 
+    def construir_comando_handshake_q_encapsulado(self) -> bytes:
+        """Construye el comando 'Q' encapsulado con CRC32 (firma extendida)."""
+        payload = bytearray([self.COMANDO_HANDSHAKE_Q])
+        crc = self.calcular_crc32(bytes(payload))
+        cuerpo = bytearray([self.HEADER_BYTE_0, self.HEADER_TX_LENGTH])
+        cuerpo += payload
+        cuerpo.extend(struct.pack('>I', crc))
+        logger.debug(f"Comando handshake Q encapsulado construido: {cuerpo.hex(' ').upper()}")
+        return bytes(cuerpo)
+
     def construir_comando_handshake_f(self) -> bytes:
         logger.debug("Comando handshake F construido.")
         return bytes([self.COMANDO_HANDSHAKE_F])
@@ -172,6 +182,27 @@ class SpeeduinoProtocol:
         logger.debug(f"Header válido: length indicado={length}, length real={actual_length} bytes")
         return True, actual_length
 
+    def validar_crc_respuesta(self, frame: bytes) -> bool:
+        """
+        Valida el CRC32 de un frame de respuesta recibido.
+
+        El CRC se calcula sobre los bytes desde el índice 2 hasta len-4
+        (es decir, el payload del envelope incluyendo el byte de código de
+        respuesta 0x00), y se compara con los 4 bytes finales del frame.
+
+        Args:
+            frame: Frame completo recibido (mínimo 7 bytes).
+
+        Returns:
+            True si el CRC es válido, False en caso contrario.
+        """
+        if len(frame) < 7:
+            return False
+        payload_for_crc = frame[2:-4]
+        crc_recibido = int.from_bytes(frame[-4:], 'big')
+        crc_calculado = self.calcular_crc32(payload_for_crc)
+        return crc_recibido == crc_calculado
+
     def parsear_respuesta(self, datos: bytes) -> Tuple[bool, Optional[bytes]]:
         header_valido, actual_length = self.validar_header_respuesta(datos)
         if not header_valido:
@@ -186,16 +217,18 @@ class SpeeduinoProtocol:
             )
             return False, None
 
+        # Los datos reales empiezan en el byte 3 (después del header 00 XX 00)
         payload = datos[self.TAMANO_HEADER_RX: self.TAMANO_HEADER_RX + actual_length]
 
-        crc_recibido_bytes = datos[
-            self.TAMANO_HEADER_RX + actual_length:
-            self.TAMANO_HEADER_RX + actual_length + self.TAMANO_CRC
-        ]
-        crc_recibido = struct.unpack('>I', crc_recibido_bytes)[0]
-        crc_calculado = self.calcular_crc32(payload)
-
-        if crc_recibido != crc_calculado:
+        # El CRC se calcula sobre los bytes 2...(len-4) del frame, que incluye
+        # el byte de código de respuesta (0x00 en posición 2) más los datos.
+        # Esto corresponde a datos[2:2+length_raw] donde length_raw = actual_length + 1.
+        if not self.validar_crc_respuesta(datos[:tamano_esperado]):
+            length_raw = datos[1]
+            crc_recibido_bytes = datos[tamano_esperado - self.TAMANO_CRC: tamano_esperado]
+            crc_recibido = struct.unpack('>I', crc_recibido_bytes)[0]
+            payload_for_crc = datos[2: 2 + length_raw]
+            crc_calculado = self.calcular_crc32(payload_for_crc)
             logger.warning(
                 f"CRC32 inválido: recibido=0x{crc_recibido:08X}, "
                 f"calculado=0x{crc_calculado:08X}"

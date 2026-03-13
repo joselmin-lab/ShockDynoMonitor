@@ -278,35 +278,64 @@ class SerialManager:
             )
             self._conectado = False
 
+    def _leer_respuesta(self, num_bytes: int, timeout: float = 0.5) -> Optional[bytes]:
+        """
+        Lee exactamente `num_bytes` bytes del puerto serial con acumulación
+        por timeout. Maneja correctamente respuestas fragmentadas que llegan
+        en múltiples chunks.
+
+        Args:
+            num_bytes: Cantidad exacta de bytes a leer.
+            timeout: Tiempo máximo de espera en segundos (por defecto 0.5 s).
+
+        Returns:
+            bytes con `num_bytes` bytes, o None si ocurrió un timeout.
+        """
+        buffer = bytearray()
+        t_inicio = time.monotonic()
+        ser = self._serial
+        while len(buffer) < num_bytes:
+            if time.monotonic() - t_inicio > timeout:
+                logger.warning(
+                    f"Timeout al leer: recibidos {len(buffer)}/{num_bytes} bytes"
+                )
+                return None
+            if ser is None or not ser.is_open:
+                return None
+            disponibles = ser.in_waiting
+            if disponibles > 0:
+                chunk = ser.read(min(disponibles, num_bytes - len(buffer)))
+                buffer.extend(chunk)
+            else:
+                time.sleep(0.001)
+        return bytes(buffer)
+
     def _realizar_handshake(self) -> bool:
         """
         Realiza la secuencia de handshake con la ECU Speeduino.
 
-        Envía el comando 'Q' y verifica que la respuesta contenga la firma
-        "speeduino". Luego envía 'F' para consultar la versión del protocolo.
-        Finalmente envía 'S' para leer la firma extendida.
+        Paso 1: Envía 'Q' (0x51) raw → verifica que la respuesta contenga
+                la firma "speeduino".
+        Paso 2: Envía 'F' (0x46) raw → lee la versión del protocolo ("002").
+        Paso 3: Envía 'Q' (0x51) encapsulado → lee y valida la firma extendida.
+        Paso 4: Envía 'S' (0x53) encapsulado → lee y almacena la firma de versión.
         """
         try:
             timeout_handshake = self._cfg_conexion.get("timeout_handshake", 2.0)
 
-            # Paso 1: Limpiar buffer y enviar 'Q', capturando referencia local
-            ser = None
+            # --- Paso 1: 'Q' raw → firma de la ECU ---
             with self._lock_serial:
                 if not (self._serial and self._serial.is_open):
                     logger.error("Puerto serial no disponible para handshake.")
                     return False
                 self._serial.reset_input_buffer()
-                logger.debug("Handshake: enviando 'Q'...")
+                logger.debug("Handshake: enviando 'Q' raw...")
                 self._serial.write(self._protocolo.construir_comando_handshake_q())
-                ser = self._serial
 
-            # Esperar al menos 500ms para dar tiempo a la ECU a responder
             time.sleep(max(timeout_handshake * 0.25, 0.5))
 
-            # Leer con referencia local, fuera del lock
-            respuesta_q = ser.read(32)
-
-            logger.debug(f"Respuesta 'Q': {respuesta_q!r}")
+            respuesta_q = self._leer_respuesta(16, timeout=1.0) or b""
+            logger.debug(f"Respuesta 'Q' raw: {respuesta_q!r}")
 
             if b"speeduino" not in respuesta_q.lower():
                 logger.warning(
@@ -314,61 +343,98 @@ class SerialManager:
                 )
                 return False
 
-            logger.info(f"Firma recibida: {respuesta_q.decode('ascii', errors='replace').strip()!r}")
-
-            # Paso 2: Enviar 'F' para consultar versión del protocolo
-            with self._lock_serial:
-                if not (self._serial and self._serial.is_open):
-                    return False
-                logger.debug("Handshake: enviando 'F'...")
-                self._serial.write(self._protocolo.construir_comando_handshake_f())
-                ser = self._serial
-
-            time.sleep(0.3)  # 300ms para dar tiempo a la respuesta F
-
-            # Leer con referencia local, fuera del lock
-            # La ECU responde exactamente 3 bytes: "002"
-            respuesta_f = ser.read(3)
-
             logger.info(
-                f"Versión de protocolo: {respuesta_f.decode('ascii', errors='replace').strip()!r}"
+                f"Firma recibida: "
+                f"{respuesta_q.decode('ascii', errors='replace').strip()!r}"
             )
 
-            # Paso 3: Enviar 'S' para solicitar Extended Signature
+            # --- Paso 2: 'F' raw → versión del protocolo ---
             with self._lock_serial:
                 if not (self._serial and self._serial.is_open):
                     return False
-                logger.debug("Handshake: enviando 'S'...")
-                
-                comando_s = self._protocolo.construir_comando_handshake_s()
-                # Asegurarse de que el comando sea de tipo bytes
-                if isinstance(comando_s, str):
-                    comando_s = comando_s.encode()
-                    
+                logger.debug("Handshake: enviando 'F' raw...")
+                self._serial.write(self._protocolo.construir_comando_handshake_f())
+
+            time.sleep(0.3)
+
+            respuesta_f = self._leer_respuesta(3, timeout=1.0) or b""
+            logger.info(
+                f"Versión de protocolo: "
+                f"{respuesta_f.decode('ascii', errors='replace').strip()!r}"
+            )
+
+            # --- Paso 3: 'Q' encapsulado → firma extendida ---
+            comando_q_enc = self._protocolo.construir_comando_handshake_q_encapsulado()
+            with self._lock_serial:
+                if not (self._serial and self._serial.is_open):
+                    return False
+                logger.debug("Handshake: enviando 'Q' encapsulado...")
+                self._serial.write(comando_q_enc)
+
+            time.sleep(0.3)
+
+            # Leer header de respuesta (3 bytes) y luego payload + CRC
+            header_q_enc = self._leer_respuesta(3, timeout=1.0)
+            if header_q_enc and len(header_q_enc) == 3:
+                header_valido, actual_len = self._protocolo.validar_header_respuesta(
+                    header_q_enc
+                )
+                if header_valido and actual_len > 0:
+                    resto_q = self._leer_respuesta(
+                        actual_len + self._protocolo.TAMANO_CRC, timeout=1.0
+                    ) or b""
+                    frame_q = header_q_enc + resto_q
+                    valido_q, payload_q = self._protocolo.parsear_respuesta(frame_q)
+                    if valido_q and payload_q:
+                        firma_q = payload_q.decode("ascii", errors="replace").strip()
+                        logger.info(f"Firma extendida (Q enc): {firma_q!r}")
+                    else:
+                        logger.warning("Respuesta 'Q' encapsulado: CRC inválido o incompleta.")
+            else:
+                logger.warning("Handshake paso 3: no se recibió header de 'Q' encapsulado.")
+
+            # --- Paso 4: 'S' encapsulado → versión extendida ---
+            comando_s = self._protocolo.construir_comando_handshake_s()
+            with self._lock_serial:
+                if not (self._serial and self._serial.is_open):
+                    return False
+                logger.debug("Handshake: enviando 'S' encapsulado...")
                 self._serial.write(comando_s)
                 self._serial.flush()
-                ser = self._serial
 
-            time.sleep(0.1)
-            
-            # Leer los bytes disponibles en el buffer usando in_waiting
-            bytes_disponibles = ser.in_waiting
-            if bytes_disponibles > 0:
-                self.extended_signature = ser.read(bytes_disponibles)
+            time.sleep(0.3)
+
+            header_s = self._leer_respuesta(3, timeout=1.0)
+            if header_s and len(header_s) == 3:
+                header_valido_s, actual_len_s = self._protocolo.validar_header_respuesta(
+                    header_s
+                )
+                if header_valido_s and actual_len_s > 0:
+                    resto_s = self._leer_respuesta(
+                        actual_len_s + self._protocolo.TAMANO_CRC, timeout=1.0
+                    ) or b""
+                    frame_s = header_s + resto_s
+                    valido_s, payload_s = self._protocolo.parsear_respuesta(frame_s)
+                    if valido_s and payload_s:
+                        self.extended_signature = payload_s
+                        version_str = payload_s.decode("ascii", errors="replace").strip()
+                        logger.info(f"Firma extendida (S enc): {version_str!r}")
+                    else:
+                        self.extended_signature = b""
+                        logger.warning("Respuesta 'S' encapsulado: CRC inválido o incompleta.")
+                else:
+                    self.extended_signature = b""
             else:
                 self.extended_signature = b""
-                
-            logger.info(f"Extended signature recibida: {self.extended_signature!r}")
+                logger.warning("Handshake paso 4: no se recibió header de 'S' encapsulado.")
 
-            # Limpiar cualquier dato residual del buffer antes de iniciar polling
+            # Limpiar buffer residual antes de iniciar el polling
             with self._lock_serial:
                 if self._serial and self._serial.is_open:
                     self._serial.reset_input_buffer()
                     logger.debug("Buffer RX limpiado tras handshake completado.")
 
-            # Pequeño delay para que la ECU procese y esté lista para el primer Read Page
             time.sleep(0.2)
-
             return True
 
         except Exception as e:
@@ -397,7 +463,6 @@ class SerialManager:
         """
         Worker del hilo de comunicación síncrona (Master-Slave).
         """
-        # AQUI HACEMOS EL CAMBIO: en lugar de read_page() enviamos read_realtime()
         comando = self._protocolo.construir_comando_read_realtime()
         logger.debug(f"Comando listo: {comando.hex(' ').upper()}")
 
@@ -405,23 +470,21 @@ class SerialManager:
             inicio = time.time()
             try:
                 # 1. Verificar puerto y enviar comando
-                ser = None
                 with self._lock_serial:
                     if self._serial and self._serial.is_open:
                         self._serial.write(comando)
                         self.estadisticas.incrementar_enviados()
-                        ser = self._serial
+                    else:
+                        time.sleep(0.01)
+                        continue
 
-                if ser is None:
-                    time.sleep(0.01)
-                    continue
+                # 2. Leer header (3 bytes) con acumulación por timeout
+                header = self._leer_respuesta(3, timeout=0.5)
 
-                # 2. Leer header
-                header = ser.read(3)
-
-                if len(header) < 3:
+                if header is None or len(header) < 3:
                     logger.warning(
-                        f"Timeout leyendo header: recibidos {len(header)}/3 bytes"
+                        f"Timeout leyendo header: recibidos "
+                        f"{len(header) if header else 0}/3 bytes"
                     )
                     self.estadisticas.incrementar_errores_timeout()
                     with self._lock_serial:
@@ -431,9 +494,7 @@ class SerialManager:
                     continue
 
                 # 3. Validar header
-                header_valido, length = self._protocolo.validar_header_respuesta(
-                    header
-                )
+                header_valido, length = self._protocolo.validar_header_respuesta(header)
                 if not header_valido:
                     logger.warning(
                         f"Header inválido: {header.hex(' ').upper()}, intentando resync..."
@@ -445,15 +506,16 @@ class SerialManager:
                         time.sleep(0.05)
                     continue
 
-                # 4. Calcular bytes restantes
+                # 4. Leer bytes restantes (payload + CRC) con acumulación por timeout
                 bytes_needed = (
                     self._protocolo.calcular_tamano_respuesta_esperada(length) - 3
                 )
-                resto = ser.read(bytes_needed)
+                resto = self._leer_respuesta(bytes_needed, timeout=0.5)
 
-                if len(resto) < bytes_needed:
+                if resto is None or len(resto) < bytes_needed:
                     logger.warning(
-                        f"Timeout leyendo payload: recibidos {len(resto)}/{bytes_needed} bytes"
+                        f"Timeout leyendo payload: recibidos "
+                        f"{len(resto) if resto else 0}/{bytes_needed} bytes"
                     )
                     self.estadisticas.incrementar_errores_timeout()
                     with self._lock_serial:

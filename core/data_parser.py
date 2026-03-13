@@ -9,7 +9,7 @@ Offsets estándar Speeduino (firmware 2025.01 / currentStatus):
     Offset 6:     IAT raw → Temp Reservorio (°C) = raw - 40
     Offset 7:     CLT raw → Temp Amortiguador (°C) = raw - 40
     Offsets 14-15: RPM uint16 Little-Endian → Velocidad (RPM)
-    Offset 24:    TPS raw → Recorrido (mm) = (raw / 255.0) * 100
+    Offset 25:    TPS raw → Recorrido (mm) = (raw / 255.0) * 100
 """
 
 import logging
@@ -89,7 +89,7 @@ class SpeeduinoDataParser:
         - 6:     IAT (Temp Reservorio) → raw - 40 = °C
         - 7:     CLT (Temp Amortiguador) → raw - 40 = °C
         - 14-15: RPM (Velocidad) uint16 Little-Endian = RPM
-        - 24:    TPS (Recorrido) → (raw / 255.0) * 100 = mm
+        - 25:    TPS (Recorrido) → (raw / 255.0) * 100 = mm
 
     Ejemplo de uso::
 
@@ -107,10 +107,10 @@ class SpeeduinoDataParser:
     OFFSET_IAT_TEMP_RES = 6     # IAT → Temp Reservorio (°C), 1 byte
     OFFSET_CLT_TEMP_AMO = 7     # CLT → Temp Amortiguador (°C), 1 byte
     OFFSET_RPM = 14             # RPM → Velocidad, uint16 Little-Endian (2 bytes)
-    OFFSET_TPS_RECORRIDO = 24   # TPS → Recorrido (mm), 1 byte
+    OFFSET_TPS_RECORRIDO = 25   # TPS → Recorrido (mm), 1 byte
 
     # Longitud mínima esperada del payload
-    LONGITUD_MINIMA_PAYLOAD = 25
+    LONGITUD_MINIMA_PAYLOAD = 26
 
     def __init__(self, config: Optional[dict] = None) -> None:
         """
@@ -190,13 +190,13 @@ class SpeeduinoDataParser:
 
         Aplica las conversiones validadas para cada sensor:
         - Fuerza: uint16 Little-Endian (offset 4) / 2.0
-        - Recorrido: (raw / 255.0) * 100  (offset 24)
+        - Recorrido: (raw / 255.0) * 100  (offset 25)
         - Temp Amortiguador: raw - 40  (offset 7)
         - Temp Reservorio: raw - 40  (offset 6)
         - Velocidad: uint16 Little-Endian (offset 14)
 
         Args:
-            payload: Bytes del payload (mínimo 25 bytes, típicamente 128 bytes).
+            payload: Bytes del payload (mínimo 26 bytes, típicamente 121 bytes).
 
         Returns:
             ShockDynoData con los valores físicos calculados y timestamp actual.
@@ -213,7 +213,7 @@ class SpeeduinoDataParser:
             payload[7] = 80    # CLT raw → Temp Amo = 80-40 = 40 °C
             payload[14] = 120  # RPM low byte
             payload[15] = 0    # RPM high byte → RPM uint16 LE = 120
-            payload[24] = 128  # TPS raw → Recorrido = (128/255)*100 ≈ 50.2 mm
+            payload[25] = 128  # TPS raw → Recorrido = (128/255)*100 ≈ 50.2 mm
             datos = parser.parsear(bytes(payload))
             # datos.fuerza_n == 100.0
             # datos.recorrido_mm ≈ 50.2
