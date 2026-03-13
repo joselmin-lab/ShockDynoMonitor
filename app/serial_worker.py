@@ -10,7 +10,12 @@ class SerialWorker(QThread):
     """QThread that reads CSV lines from an Arduino and emits a signal per line.
 
     Expected Arduino format (one line per measurement):
-        Fuerza_N,Recorrido_raw,Temp_Amo_C,Temp_Res_C,RPM
+        Fuerza_raw,Recorrido_raw,Temp_Amo_C,Temp_Res_C,RPM
+
+    The force field is the RAW analog integer (0-1023) from the AD623 amplifier.
+    Force calibration converts raw to Newtons using a tare (zero) point and a
+    known-weight point:
+        N = (raw - force_zero_raw) * (force_known_physical_n / (force_known_raw - force_zero_raw))
 
     The distance field is the RAW analog integer (0-1023) from the potentiometer.
     Calibration uses PMI/PMS (Bottom/Top Dead Center) raw values and the physical
@@ -33,6 +38,7 @@ class SerialWorker(QThread):
         self._cal_lock = threading.Lock()
         self._running = False
         self._last_raw_distance: int | None = None
+        self._last_raw_force: int | None = None
         self._raw_lock = threading.Lock()
 
     @property
@@ -40,6 +46,12 @@ class SerialWorker(QThread):
         """Return the most recently received raw distance value (thread-safe)."""
         with self._raw_lock:
             return self._last_raw_distance
+
+    @property
+    def last_raw_force(self) -> int | None:
+        """Return the most recently received raw force value (thread-safe)."""
+        with self._raw_lock:
+            return self._last_raw_force
 
     def set_calibration(self, calibration: dict) -> None:
         """Update calibration values while the worker is running (thread-safe)."""
@@ -55,6 +67,20 @@ class SerialWorker(QThread):
         if span == 0:
             return 0.0
         return (raw - raw_pmi) * (stroke / span)
+
+    def _raw_to_force(self, raw: float, cal: dict) -> float:
+        """Convert raw force value (0-1023 from AD623) to Newtons using tare + known-weight calibration.
+
+        Formula: N = (raw - force_zero_raw) * (force_known_physical_n / (force_known_raw - force_zero_raw))
+        """
+        zero = cal.get("force_zero_raw", 512.0)
+        known_raw = cal.get("force_known_raw", 1023.0)
+        known_n = cal.get("force_known_physical_n", 100.0)
+        span = known_raw - zero
+        if span == 0:
+            return 0.0
+        # Negative span is valid: it means raw decreases as force increases (reversed wiring).
+        return (raw - zero) * (known_n / span)
 
     def run(self):
         self._running = True
@@ -85,15 +111,16 @@ class SerialWorker(QThread):
                         parts = line.split(",")
                         if len(parts) != 5:
                             continue
-                        fuerza = float(parts[0])
+                        raw_force = float(parts[0])
                         raw_dist = int(float(parts[1]))
                         temp_amo = float(parts[2])
                         temp_res = float(parts[3])
                         rpm = int(float(parts[4]))
 
-                        # Store latest raw distance for calibration capture
+                        # Store latest raw values for calibration capture
                         with self._raw_lock:
                             self._last_raw_distance = raw_dist
+                            self._last_raw_force = int(round(raw_force))
 
                         # Apply calibration (take a snapshot to minimise lock hold time)
                         with self._cal_lock:
@@ -101,6 +128,7 @@ class SerialWorker(QThread):
                         temp_amo = temp_amo + cal.get("temp_amo_offset", 0.0)
                         temp_res = temp_res + cal.get("temp_res_offset", 0.0)
                         recorrido = self._raw_to_mm(raw_dist, cal)
+                        fuerza = self._raw_to_force(raw_force, cal)
 
                         self.data_received.emit(fuerza, recorrido, temp_amo, temp_res, rpm)
                     except ValueError:
