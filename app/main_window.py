@@ -13,9 +13,10 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from app.calibration import load_calibration
+from app.calibration import load_calibration, load_graph_settings
 from app.calibration_dialog import CalibrationDialog
 from app.dashboard import DashboardWidget
+from app.graph_settings_dialog import GraphSettingsDialog
 from app.graphs import GraphsWidget
 from app.serial_worker import SerialWorker
 
@@ -59,6 +60,12 @@ QPushButton#btn_cal {
 }
 QPushButton#btn_cal:hover  { background: #3a5028; }
 QPushButton#btn_cal:pressed { background: #1e2e14; }
+QPushButton#btn_graph_settings {
+    background: #1e2a3f;
+    border-color: #3a6faf;
+}
+QPushButton#btn_graph_settings:hover  { background: #253550; }
+QPushButton#btn_graph_settings:pressed { background: #162030; }
 QStatusBar {
     background: #0d0d1a;
     color: #808099;
@@ -123,6 +130,12 @@ class MainWindow(QMainWindow):
         self._btn_cal.clicked.connect(self._open_calibration)
         toolbar.addWidget(self._btn_cal)
 
+        self._btn_graph_settings = QPushButton("📈  Gráficos")
+        self._btn_graph_settings.setObjectName("btn_graph_settings")
+        self._btn_graph_settings.setToolTip("Configurar límites de ejes de los gráficos")
+        self._btn_graph_settings.clicked.connect(self._open_graph_settings)
+        toolbar.addWidget(self._btn_graph_settings)
+
         toolbar.addStretch()
         root_layout.addLayout(toolbar)
 
@@ -132,6 +145,7 @@ class MainWindow(QMainWindow):
 
         # ── Graphs ──────────────────────────────────────────────────────
         self._graphs = GraphsWidget()
+        self._graphs.apply_graph_settings(load_graph_settings())
         root_layout.addWidget(self._graphs, stretch=1)
 
         # ── Status bar ──────────────────────────────────────────────────
@@ -182,6 +196,11 @@ class MainWindow(QMainWindow):
             self._calibration = dlg.calibration_values()
             if self._worker is not None:
                 self._worker.set_calibration(self._calibration)
+
+    def _open_graph_settings(self):
+        dlg = GraphSettingsDialog(self)
+        if dlg.exec_() == GraphSettingsDialog.Accepted:
+            self._graphs.apply_graph_settings(dlg.graph_settings())
 
     def _on_data(self, fuerza: float, recorrido: float, temp_amo: float, temp_res: float, rpm: int):
         self._dashboard.update_values(fuerza, recorrido, temp_amo, temp_res, rpm)
