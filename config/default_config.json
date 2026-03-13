@@ -5,7 +5,7 @@
     "bits_datos": 8,
     "paridad": "N",
     "bits_parada": 1,
-    "timeout": 1.0,
+    "timeout": 0.1,
     "delay_conexion": 1,
     "intervalo_polling_ms": 50
   },
