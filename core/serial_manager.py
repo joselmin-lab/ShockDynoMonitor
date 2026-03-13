@@ -97,8 +97,8 @@ class SerialManager:
     Gestiona la conexión serial con la ECU Speeduino.
 
     Usa un único hilo de comunicación síncrono (Master-Slave) que envía el
-    comando Read Page ('p' / 0x70) y lee la respuesta en el mismo ciclo
-    mediante lecturas bloqueantes (sin in_waiting).
+    comando y lee la respuesta en el mismo ciclo mediante lecturas bloqueantes 
+    (sin in_waiting).
     Esto elimina la competencia por locks entre hilos independientes.
 
     Realiza handshake automático ('Q' → firma, 'F' → versión, 'S' → firma extendida) antes de
@@ -397,7 +397,8 @@ class SerialManager:
         """
         Worker del hilo de comunicación síncrona (Master-Slave).
         """
-        comando = self._protocolo.construir_comando_read_page()
+        # AQUI HACEMOS EL CAMBIO: en lugar de read_page() enviamos read_realtime()
+        comando = self._protocolo.construir_comando_read_realtime()
         logger.debug(f"Comando listo: {comando.hex(' ').upper()}")
 
         while not self._evento_detener.is_set():

@@ -11,27 +11,15 @@ Secuencia de handshake:
     2. Enviar 'F' (0x46) → Respuesta con versión del protocolo.
     3. Enviar 'S' encapsulado (0x53) → Respuesta con firma extendida.
 
-Estructura del comando TX Read Page ('p' / 0x70):
+Estructura del comando TX Read Realtime ('r' / 0x72):
     Byte 0:    0x00       → Header
     Byte 1:    0x07       → Length (7 bytes de payload)
-    Byte 2:    0x70       → Comando 'p' (Read Page)
+    Byte 2:    0x72       → Comando 'r' (Read Realtime)
     Byte 3:    0x00       → CanID
-    Byte 4:    0x01       → Page (página 1 = datos en tiempo real)
+    Byte 4:    0x30       → Page (página 48 = telemetría)
     Bytes 5-6: 0x00 0x00  → Offset (16-bit little-endian)
     Bytes 7-8: 0x79 0x00  → Size (16-bit little-endian, 121 bytes solicitados)
     Bytes 9-12: CRC32 big-endian (MSB primero) calculado sobre los bytes 2-8 (payload)
-
-Estructura de la respuesta RX:
-    Bytes 0-2: Header (00 XX 00, donde XX es el length)
-    Bytes 3-N: Payload (121 bytes de datos de sensores para 0x7A length byte)
-    Bytes N+1-N+4: CRC32 big-endian (MSB primero) calculado sobre el payload
-
-Nota sobre el tamaño del payload:
-    El comando TX solicita 121 bytes (size=0x79). La ECU Speeduino responde
-    con un byte de longitud en el header igual a 122 (0x7A), sin embargo, 
-    el payload real transmitido es de 121 bytes. 
-    El frame completo es: 3 (header) + 121 (payload) + 4 (CRC) = 128 bytes.
-    Esto está validado en la captura del 2026-03-12.
 """
 
 import binascii
@@ -54,15 +42,17 @@ class SpeeduinoProtocol:
     # Constantes del protocolo
     COMANDO_REALTIME = 0x41          # Comando legacy 'A' para datos en tiempo real
     COMANDO_READ_PAGE = 0x70         # Comando 'p' para leer una página de la ECU
+    COMANDO_READ_REALTIME = 0x72     # Comando 'r' para datos en tiempo real (CRC protocol)
     COMANDO_HANDSHAKE_Q = 0x51       # Comando 'Q' de handshake (consulta de firma)
     COMANDO_HANDSHAKE_F = 0x46       # Comando 'F' de handshake (consulta de versión)
     COMANDO_HANDSHAKE_S = 0x53       # Comando 'S' encapsulado de firma extendida
     HEADER_BYTE_0 = 0x00             # Primer byte del header TX/RX
     HEADER_TX_LENGTH = 0x01          # Length del payload TX legacy (1 byte)
 
-    # Parámetros por defecto del comando Read Page (validados en captura 2026-03-12)
+    # Parámetros por defecto del comando Read Page / Read Realtime
     READ_PAGE_CAN_ID = 0x00   # CanID (0 = local)
-    READ_PAGE_PAGE = 0x01     # Página de datos en tiempo real (página 1)
+    READ_PAGE_PAGE = 0x01     # Página por defecto
+    READ_REALTIME_PAGE = 0x30 # Página 48 para telemetría
     READ_PAGE_OFFSET = 0      # Offset dentro de la página
     READ_PAGE_SIZE = 121      # Cantidad de bytes a leer (0x79)
 
@@ -127,11 +117,37 @@ class SpeeduinoProtocol:
         logger.debug(f"Comando read_page construido: {cuerpo.hex(' ').upper()}")
         return bytes(cuerpo)
 
+    def construir_comando_read_realtime(
+        self,
+        can_id: int = READ_PAGE_CAN_ID,
+        page: int = READ_REALTIME_PAGE,  # Usamos la página 0x30
+        offset: int = READ_PAGE_OFFSET,
+        size: int = READ_PAGE_SIZE,
+    ) -> bytes:
+        """
+        Construye el comando 'r' para solicitar telemetría en el protocolo nuevo.
+        Este es el equivalente a lo que hace TunerStudio.
+        """
+        payload = struct.pack(
+            '<BBBHH',
+            self.COMANDO_READ_REALTIME,  # 0x72 'r'
+            can_id,                      # CanID
+            page,                        # Page (0x30 por defecto)
+            offset,                      # Offset (16-bit LE)
+            size,                        # Size  (16-bit LE)
+        )
+        crc = self.calcular_crc32(bytes(payload))
+        cuerpo = bytearray([self.HEADER_BYTE_0, len(payload)])
+        cuerpo += bytearray(payload)
+        cuerpo.extend(struct.pack('>I', crc))
+        logger.debug(f"Comando read_realtime construido: {cuerpo.hex(' ').upper()}")
+        return bytes(cuerpo)
+
     def validar_header_respuesta(self, datos: bytes) -> Tuple[bool, int]:
         if len(datos) < self.TAMANO_HEADER_RX:
             logger.warning(
-                f"Header demasiado corto: {len(datos)} bytes \
-                (esperado >= {self.TAMANO_HEADER_RX})"
+                f"Header demasiado corto: {len(datos)} bytes "
+                f"(esperado >= {self.TAMANO_HEADER_RX})"
             )
             return False, 0
 
@@ -141,8 +157,8 @@ class SpeeduinoProtocol:
 
         if byte_0 != 0x00 or byte_2 != 0x00:
             logger.warning(
-                f"Header inválido: {datos[:3].hex(' ').upper()} \
-                (esperado: 00 XX 00)"
+                f"Header inválido: {datos[:3].hex(' ').upper()} "
+                f"(esperado: 00 XX 00)"
             )
             return False, 0
 
@@ -165,8 +181,8 @@ class SpeeduinoProtocol:
 
         if len(datos) < tamano_esperado:
             logger.warning(
-                f"Respuesta incompleta: {len(datos)} bytes \
-                (esperado {tamano_esperado})"
+                f"Respuesta incompleta: {len(datos)} bytes "
+                f"(esperado {tamano_esperado})"
             )
             return False, None
 
@@ -181,8 +197,8 @@ class SpeeduinoProtocol:
 
         if crc_recibido != crc_calculado:
             logger.warning(
-                f"CRC32 inválido: recibido=0x{crc_recibido:08X}, \
-                calculado=0x{crc_calculado:08X}"
+                f"CRC32 inválido: recibido=0x{crc_recibido:08X}, "
+                f"calculado=0x{crc_calculado:08X}"
             )
             return False, None
 
