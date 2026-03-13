@@ -3,13 +3,13 @@ Módulo: data_parser.py
 Descripción: Conversión de los 128 bytes de payload de la ECU Speeduino
              a valores físicos calibrados para el banco de pruebas de amortiguadores.
 
-Offsets validados mediante captura real (2026-03-12):
-    Offset 0: secCounter (ignorar)
-    Offset 1: MAP raw → Fuerza (N) = raw / 2.0
-    Offset 2: TPS raw → Recorrido (mm) = (raw / 255.0) * 100
-    Offset 3: CLT raw → Temp Amortiguador (°C) = raw - 40
-    Offset 4: IAT raw → Temp Reservorio (°C) = raw - 40
-    Offsets 5-6: RPM uint16 big-endian → Velocidad (RPM) = (byte5 << 8) | byte6
+Offsets estándar Speeduino (firmware 2025.01 / currentStatus):
+    Offset 0:     secCounter (ignorar)
+    Offset 4-5:   MAP raw uint16 Little-Endian → Fuerza (N) = raw / 2.0
+    Offset 6:     IAT raw → Temp Reservorio (°C) = raw - 40
+    Offset 7:     CLT raw → Temp Amortiguador (°C) = raw - 40
+    Offsets 14-15: RPM uint16 Little-Endian → Velocidad (RPM)
+    Offset 24:    TPS raw → Recorrido (mm) = (raw / 255.0) * 100
 """
 
 import logging
@@ -83,13 +83,13 @@ class SpeeduinoDataParser:
 
     Los offsets y conversiones fueron validados con capturas reales el 2026-03-12.
 
-    Offsets de payload:
-        - 0: secCounter (contador de segundos, ignorado)
-        - 1: MAP (Fuerza) → raw / 2.0 = Newtons
-        - 2: TPS (Recorrido) → (raw / 255.0) * 100 = mm
-        - 3: CLT (Temp Amortiguador) → raw - 40 = °C
-        - 4: IAT (Temp Reservorio) → raw - 40 = °C
-        - 5-6: RPM (Velocidad) → (byte5 << 8) | byte6 = RPM (big-endian)
+    Offsets de payload (estándar Speeduino firmware 2025.01 / currentStatus):
+        - 0:     secCounter (contador de segundos, ignorado)
+        - 4-5:   MAP (Fuerza) uint16 Little-Endian → raw / 2.0 = Newtons
+        - 6:     IAT (Temp Reservorio) → raw - 40 = °C
+        - 7:     CLT (Temp Amortiguador) → raw - 40 = °C
+        - 14-15: RPM (Velocidad) uint16 Little-Endian = RPM
+        - 24:    TPS (Recorrido) → (raw / 255.0) * 100 = mm
 
     Ejemplo de uso::
 
@@ -101,17 +101,16 @@ class SpeeduinoDataParser:
             print(f"Recorrido: {datos.recorrido_mm:.1f} mm")
     """
 
-    # Offsets validados dentro del payload de 128 bytes
+    # Offsets estándar Speeduino (firmware 2025.01 / currentStatus)
     OFFSET_SEC_COUNTER = 0      # Contador de segundos (ignorar)
-    OFFSET_MAP_FUERZA = 1       # MAP → Fuerza (N)
-    OFFSET_TPS_RECORRIDO = 2    # TPS → Recorrido (mm)
-    OFFSET_CLT_TEMP_AMO = 3     # CLT → Temp Amortiguador (°C)
-    OFFSET_IAT_TEMP_RES = 4     # IAT → Temp Reservorio (°C)
-    OFFSET_RPM_HIGH = 5         # RPM byte alto (big-endian)
-    OFFSET_RPM_LOW = 6          # RPM byte bajo (big-endian)
+    OFFSET_MAP_FUERZA = 4       # MAP → Fuerza (N), uint16 Little-Endian (2 bytes)
+    OFFSET_IAT_TEMP_RES = 6     # IAT → Temp Reservorio (°C), 1 byte
+    OFFSET_CLT_TEMP_AMO = 7     # CLT → Temp Amortiguador (°C), 1 byte
+    OFFSET_RPM = 14             # RPM → Velocidad, uint16 Little-Endian (2 bytes)
+    OFFSET_TPS_RECORRIDO = 24   # TPS → Recorrido (mm), 1 byte
 
     # Longitud mínima esperada del payload
-    LONGITUD_MINIMA_PAYLOAD = 7
+    LONGITUD_MINIMA_PAYLOAD = 25
 
     def __init__(self, config: Optional[dict] = None) -> None:
         """
@@ -190,14 +189,14 @@ class SpeeduinoDataParser:
         Convierte el payload de 128 bytes de la ECU a datos físicos calibrados.
 
         Aplica las conversiones validadas para cada sensor:
-        - Fuerza: raw / 2.0
-        - Recorrido: (raw / 255.0) * 100
-        - Temp Amortiguador: raw - 40
-        - Temp Reservorio: raw - 40
-        - Velocidad: (byte_high << 8) | byte_low  (big-endian)
+        - Fuerza: uint16 Little-Endian (offset 4) / 2.0
+        - Recorrido: (raw / 255.0) * 100  (offset 24)
+        - Temp Amortiguador: raw - 40  (offset 7)
+        - Temp Reservorio: raw - 40  (offset 6)
+        - Velocidad: uint16 Little-Endian (offset 14)
 
         Args:
-            payload: Bytes del payload (mínimo 7 bytes, típicamente 128 bytes).
+            payload: Bytes del payload (mínimo 25 bytes, típicamente 128 bytes).
 
         Returns:
             ShockDynoData con los valores físicos calculados y timestamp actual.
@@ -206,14 +205,15 @@ class SpeeduinoDataParser:
         Ejemplo::
 
             parser = SpeeduinoDataParser()
-            # Payload de ejemplo con valores conocidos
+            # Payload de ejemplo con valores conocidos (128 bytes)
             payload = bytearray(128)
-            payload[1] = 200   # MAP raw → Fuerza = 200/2.0 = 100 N
-            payload[2] = 128   # TPS raw → Recorrido = (128/255)*100 ≈ 50.2 mm
-            payload[3] = 80    # CLT raw → Temp Amo = 80-40 = 40 °C
-            payload[4] = 70    # IAT raw → Temp Res = 70-40 = 30 °C
-            payload[5] = 0     # RPM high byte
-            payload[6] = 120   # RPM low byte → Velocidad = 120 RPM
+            payload[4] = 200   # MAP low byte
+            payload[5] = 0     # MAP high byte → MAP uint16 LE = 200 → Fuerza = 200/2.0 = 100.0 N
+            payload[6] = 70    # IAT raw → Temp Res = 70-40 = 30 °C
+            payload[7] = 80    # CLT raw → Temp Amo = 80-40 = 40 °C
+            payload[14] = 120  # RPM low byte
+            payload[15] = 0    # RPM high byte → RPM uint16 LE = 120
+            payload[24] = 128  # TPS raw → Recorrido = (128/255)*100 ≈ 50.2 mm
             datos = parser.parsear(bytes(payload))
             # datos.fuerza_n == 100.0
             # datos.recorrido_mm ≈ 50.2
@@ -234,15 +234,15 @@ class SpeeduinoDataParser:
 
         try:
             # --- Fuerza (N) ---
-            # MAP raw (offset 1): raw / 2.0 = Newtons
+            # MAP uint16 Little-Endian (offsets 4-5): raw / 2.0 = Newtons
             escala_fuerza, offset_fuerza = self._obtener_escala_offset(
                 "fuerza", 0.5, 0.0
             )
-            mapa_raw = payload[self.OFFSET_MAP_FUERZA]
+            mapa_raw = struct.unpack_from('<H', payload, self.OFFSET_MAP_FUERZA)[0]
             fuerza_n = (mapa_raw * escala_fuerza) + offset_fuerza
 
             # --- Recorrido (mm) ---
-            # TPS raw (offset 2): (raw / 255.0) * 100 = mm (porcentaje de rango)
+            # TPS raw (offset 24): (raw / 255.0) * 100 = mm (porcentaje de rango)
             escala_recorrido, offset_recorrido = self._obtener_escala_offset(
                 "recorrido", 0.392157, 0.0
             )
@@ -250,7 +250,7 @@ class SpeeduinoDataParser:
             recorrido_mm = (tps_raw * escala_recorrido) + offset_recorrido
 
             # --- Temperatura Amortiguador (°C) ---
-            # CLT raw (offset 3): raw - 40 = °C
+            # CLT raw (offset 7): raw - 40 = °C
             escala_temp_amo, offset_temp_amo = self._obtener_escala_offset(
                 "temp_amortiguador", 1.0, -40.0
             )
@@ -258,7 +258,7 @@ class SpeeduinoDataParser:
             temp_amortiguador_c = (clt_raw * escala_temp_amo) + offset_temp_amo
 
             # --- Temperatura Reservorio (°C) ---
-            # IAT raw (offset 4): raw - 40 = °C
+            # IAT raw (offset 6): raw - 40 = °C
             escala_temp_res, offset_temp_res = self._obtener_escala_offset(
                 "temp_reservorio", 1.0, -40.0
             )
@@ -266,10 +266,8 @@ class SpeeduinoDataParser:
             temp_reservorio_c = (iat_raw * escala_temp_res) + offset_temp_res
 
             # --- Velocidad (RPM) ---
-            # RPM uint16 big-endian (offsets 5-6): (byte_high << 8) | byte_low
-            rpm_high = payload[self.OFFSET_RPM_HIGH]
-            rpm_low = payload[self.OFFSET_RPM_LOW]
-            velocidad_rpm = (rpm_high << 8) | rpm_low
+            # RPM uint16 Little-Endian (offsets 14-15)
+            velocidad_rpm = struct.unpack_from('<H', payload, self.OFFSET_RPM)[0]
 
             logger.debug(
                 f"Datos parseados: F={fuerza_n:.1f}N, R={recorrido_mm:.1f}mm, "

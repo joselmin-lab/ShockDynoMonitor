@@ -80,15 +80,15 @@ Basado en captura validada el 2026-03-12.
 - **Comando:** `0x41` con CRC32 little-endian
 - **Respuesta:** Header `00 XX 00` + 128 bytes de payload + CRC32
 
-### Offsets de Payload (Validados)
+### Offsets de Payload (Estándar Speeduino firmware 2025.01 / currentStatus)
 
-| Offset | Sensor | Conversión |
-|--------|--------|------------|
-| 1 | Fuerza (N) | `raw / 2.0` |
-| 2 | Recorrido (mm) | `(raw / 255.0) * 100` |
-| 3 | Temp. Amortiguador (°C) | `raw - 40` |
-| 4 | Temp. Reservorio (°C) | `raw - 40` |
-| 5-6 | Velocidad (RPM) | `(byte5 << 8) \| byte6` (big-endian) |
+| Offset | Sensor | Tipo | Conversión |
+|--------|--------|------|------------|
+| 4-5 | Fuerza (N) | uint16 Little-Endian | `raw / 2.0` |
+| 6 | Temp. Reservorio (°C) | uint8 | `raw - 40` |
+| 7 | Temp. Amortiguador (°C) | uint8 | `raw - 40` |
+| 14-15 | Velocidad (RPM) | uint16 Little-Endian | valor directo |
+| 24 | Recorrido (mm) | uint8 | `(raw / 255.0) * 100` |
 
 ## Configuración
 
