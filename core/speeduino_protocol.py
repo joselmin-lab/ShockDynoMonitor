@@ -11,12 +11,13 @@ Secuencia de handshake:
     2. Enviar 'F' (0x46) → Respuesta con versión del protocolo.
     3. Enviar 'S' encapsulado (0x53) → Respuesta con firma extendida.
 
-Estructura del comando TX Read Realtime ('r' / 0x72):
+Estructura del comando TX Read Realtime ('p' / 0x70), replicando exactamente
+lo que hace TunerStudio en la captura del 2026-03-12:
     Byte 0:    0x00       → Header
     Byte 1:    0x07       → Length (7 bytes de payload)
-    Byte 2:    0x72       → Comando 'r' (Read Realtime)
+    Byte 2:    0x70       → Comando 'p' (Read Page)
     Byte 3:    0x00       → CanID
-    Byte 4:    0x30       → Page (página 48 = telemetría)
+    Byte 4:    0x01       → Page 1 (telemetría realtime)
     Bytes 5-6: 0x00 0x00  → Offset (16-bit little-endian)
     Bytes 7-8: 0x79 0x00  → Size (16-bit little-endian, 121 bytes solicitados)
     Bytes 9-12: CRC32 big-endian (MSB primero) calculado sobre los bytes 2-8 (payload)
@@ -50,11 +51,12 @@ class SpeeduinoProtocol:
     HEADER_TX_LENGTH = 0x01          # Length del payload TX legacy (1 byte)
 
     # Parámetros por defecto del comando Read Page / Read Realtime
-    READ_PAGE_CAN_ID = 0x00   # CanID (0 = local)
-    READ_PAGE_PAGE = 0x01     # Página por defecto
-    READ_REALTIME_PAGE = 0x30 # Página 48 para telemetría
-    READ_PAGE_OFFSET = 0      # Offset dentro de la página
-    READ_PAGE_SIZE = 121      # Cantidad de bytes a leer (0x79)
+    READ_PAGE_CAN_ID = 0x00       # CanID (0 = local)
+    READ_PAGE_PAGE = 0x01         # Página por defecto
+    READ_REALTIME_PAGE = 0x30     # Página 48 (legacy, no usada por TunerStudio)
+    READ_REALTIME_PAGE_TS = 0x01  # Página 1 usada por TunerStudio para telemetría
+    READ_PAGE_OFFSET = 0          # Offset dentro de la página
+    READ_PAGE_SIZE = 121          # Cantidad de bytes a leer (0x79)
 
     # Tamaño del header de respuesta: 3 bytes (00 XX 00)
     TAMANO_HEADER_RX = 3
@@ -130,21 +132,26 @@ class SpeeduinoProtocol:
     def construir_comando_read_realtime(
         self,
         can_id: int = READ_PAGE_CAN_ID,
-        page: int = READ_REALTIME_PAGE,  # Usamos la página 0x30
+        page: int = READ_REALTIME_PAGE_TS,  # page=0x01, igual que TunerStudio
         offset: int = READ_PAGE_OFFSET,
         size: int = READ_PAGE_SIZE,
     ) -> bytes:
         """
-        Construye el comando 'r' para solicitar telemetría en el protocolo nuevo.
-        Este es el equivalente a lo que hace TunerStudio.
+        Construye el comando 'p' (0x70) para solicitar telemetría en tiempo real.
+
+        Replica exactamente el comando que usa TunerStudio según la captura
+        del 2026-03-12: comando 0x70 (Read Page) con page=0x01, offset=0,
+        size=121 bytes.
+
+        TX resultante: 00 07 70 00 01 00 00 79 00 [CRC32 big-endian]
         """
         payload = struct.pack(
             '<BBBHH',
-            self.COMANDO_READ_REALTIME,  # 0x72 'r'
-            can_id,                      # CanID
-            page,                        # Page (0x30 por defecto)
-            offset,                      # Offset (16-bit LE)
-            size,                        # Size  (16-bit LE)
+            self.COMANDO_READ_PAGE,  # 0x70 'p'
+            can_id,                  # CanID
+            page,                    # Page (0x01 por defecto, igual que TunerStudio)
+            offset,                  # Offset (16-bit LE)
+            size,                    # Size  (16-bit LE)
         )
         crc = self.calcular_crc32(bytes(payload))
         cuerpo = bytearray([self.HEADER_BYTE_0, len(payload)])

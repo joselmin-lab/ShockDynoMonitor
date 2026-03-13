@@ -9,7 +9,7 @@ Offsets estándar Speeduino (firmware 2025.01 / currentStatus):
     Offset 6:     IAT raw → Temp Reservorio (°C) = raw - 40
     Offset 7:     CLT raw → Temp Amortiguador (°C) = raw - 40
     Offsets 14-15: RPM uint16 Little-Endian → Velocidad (RPM)
-    Offset 25:    TPS raw → Recorrido (mm) = (raw / 255.0) * 100
+    Offset 24:    TPS raw → Recorrido (mm) = (raw / 255.0) * 100
 """
 
 import logging
@@ -89,7 +89,7 @@ class SpeeduinoDataParser:
         - 6:     IAT (Temp Reservorio) → raw - 40 = °C
         - 7:     CLT (Temp Amortiguador) → raw - 40 = °C
         - 14-15: RPM (Velocidad) uint16 Little-Endian = RPM
-        - 25:    TPS (Recorrido) → (raw / 255.0) * 100 = mm
+        - 24:    TPS (Recorrido) → (raw / 255.0) * 100 = mm
 
     Ejemplo de uso::
 
@@ -107,7 +107,7 @@ class SpeeduinoDataParser:
     OFFSET_IAT_TEMP_RES = 6     # IAT → Temp Reservorio (°C), 1 byte
     OFFSET_CLT_TEMP_AMO = 7     # CLT → Temp Amortiguador (°C), 1 byte
     OFFSET_RPM = 14             # RPM → Velocidad, uint16 Little-Endian (2 bytes)
-    OFFSET_TPS_RECORRIDO = 25   # TPS → Recorrido (mm), 1 byte
+    OFFSET_TPS_RECORRIDO = 24   # TPS → Recorrido (mm), 1 byte
 
     # Longitud mínima esperada del payload
     LONGITUD_MINIMA_PAYLOAD = 26
@@ -162,6 +162,23 @@ class SpeeduinoDataParser:
         self._cfg_sensores = self._config.get("sensores", {})
         logger.info("Calibración del parser actualizada.")
 
+    def _obtener_offset_payload(self, nombre_sensor: str, offset_default: int) -> int:
+        """
+        Obtiene el offset de payload para un sensor desde la configuración.
+
+        Primero busca en la configuración cargada, y si no está, usa el
+        valor hardcodeado por defecto.
+
+        Args:
+            nombre_sensor: Clave del sensor en config["sensores"].
+            offset_default: Offset por defecto del protocolo (constante de clase).
+
+        Returns:
+            Offset del payload como entero.
+        """
+        cfg = self._cfg_sensores.get(nombre_sensor, {})
+        return int(cfg.get("offset_payload", offset_default))
+
     def _obtener_escala_offset(
         self, nombre_sensor: str, escala_default: float, offset_default: float
     ) -> tuple:
@@ -190,7 +207,7 @@ class SpeeduinoDataParser:
 
         Aplica las conversiones validadas para cada sensor:
         - Fuerza: uint16 Little-Endian (offset 4) / 2.0
-        - Recorrido: (raw / 255.0) * 100  (offset 25)
+        - Recorrido: (raw / 255.0) * 100  (offset 24)
         - Temp Amortiguador: raw - 40  (offset 7)
         - Temp Reservorio: raw - 40  (offset 6)
         - Velocidad: uint16 Little-Endian (offset 14)
@@ -213,7 +230,7 @@ class SpeeduinoDataParser:
             payload[7] = 80    # CLT raw → Temp Amo = 80-40 = 40 °C
             payload[14] = 120  # RPM low byte
             payload[15] = 0    # RPM high byte → RPM uint16 LE = 120
-            payload[25] = 128  # TPS raw → Recorrido = (128/255)*100 ≈ 50.2 mm
+            payload[24] = 128  # TPS raw → Recorrido = (128/255)*100 ≈ 50.2 mm
             datos = parser.parsear(bytes(payload))
             # datos.fuerza_n == 100.0
             # datos.recorrido_mm ≈ 50.2
@@ -238,7 +255,8 @@ class SpeeduinoDataParser:
             escala_fuerza, offset_fuerza = self._obtener_escala_offset(
                 "fuerza", 0.5, 0.0
             )
-            mapa_raw = struct.unpack_from('<H', payload, self.OFFSET_MAP_FUERZA)[0]
+            offset_map = self._obtener_offset_payload("fuerza", self.OFFSET_MAP_FUERZA)
+            mapa_raw = struct.unpack_from('<H', payload, offset_map)[0]
             fuerza_n = (mapa_raw * escala_fuerza) + offset_fuerza
 
             # --- Recorrido (mm) ---
@@ -246,7 +264,8 @@ class SpeeduinoDataParser:
             escala_recorrido, offset_recorrido = self._obtener_escala_offset(
                 "recorrido", 0.392157, 0.0
             )
-            tps_raw = payload[self.OFFSET_TPS_RECORRIDO]
+            offset_tps = self._obtener_offset_payload("recorrido", self.OFFSET_TPS_RECORRIDO)
+            tps_raw = payload[offset_tps]
             recorrido_mm = (tps_raw * escala_recorrido) + offset_recorrido
 
             # --- Temperatura Amortiguador (°C) ---
@@ -254,7 +273,8 @@ class SpeeduinoDataParser:
             escala_temp_amo, offset_temp_amo = self._obtener_escala_offset(
                 "temp_amortiguador", 1.0, -40.0
             )
-            clt_raw = payload[self.OFFSET_CLT_TEMP_AMO]
+            offset_clt = self._obtener_offset_payload("temp_amortiguador", self.OFFSET_CLT_TEMP_AMO)
+            clt_raw = payload[offset_clt]
             temp_amortiguador_c = (clt_raw * escala_temp_amo) + offset_temp_amo
 
             # --- Temperatura Reservorio (°C) ---
@@ -262,12 +282,17 @@ class SpeeduinoDataParser:
             escala_temp_res, offset_temp_res = self._obtener_escala_offset(
                 "temp_reservorio", 1.0, -40.0
             )
-            iat_raw = payload[self.OFFSET_IAT_TEMP_RES]
+            offset_iat = self._obtener_offset_payload("temp_reservorio", self.OFFSET_IAT_TEMP_RES)
+            iat_raw = payload[offset_iat]
             temp_reservorio_c = (iat_raw * escala_temp_res) + offset_temp_res
 
             # --- Velocidad (RPM) ---
-            # RPM uint16 Little-Endian (offsets 14-15)
-            velocidad_rpm = struct.unpack_from('<H', payload, self.OFFSET_RPM)[0]
+            # RPM uint16 Little-Endian (offsets 14-15).
+            # Velocidad usa offset_payload_low (byte menos significativo) como
+            # punto de inicio del uint16 LE, ya que ocupa dos bytes consecutivos.
+            cfg_vel = self._cfg_sensores.get("velocidad", {})
+            offset_rpm = int(cfg_vel.get("offset_payload_low", self.OFFSET_RPM))
+            velocidad_rpm = struct.unpack_from('<H', payload, offset_rpm)[0]
 
             logger.debug(
                 f"Datos parseados: F={fuerza_n:.1f}N, R={recorrido_mm:.1f}mm, "
