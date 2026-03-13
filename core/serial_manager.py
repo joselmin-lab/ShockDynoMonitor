@@ -277,7 +277,7 @@ class SerialManager:
                             recorrido_mm=float(partes[1]),
                             temp_amortiguador_c=float(partes[2]),
                             temp_reservorio_c=float(partes[3]),
-                            velocidad_rpm=int(partes[4]),
+                            velocidad_rpm=int(float(partes[4])),
                             valido=True,
                         )
                         self.estadisticas.incrementar_recibidos()
