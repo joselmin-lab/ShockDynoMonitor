@@ -445,10 +445,9 @@ class MainWindow(QMainWindow):
             self._accion_desconectar_menu.setEnabled(True)
             self._combo_puertos.setEnabled(False)
 
-            modo = "SIMULADOR" if self._serial_manager.es_simulador else "ECU Real"
-            self._lbl_estado.setText(f"Conectado ({modo}): {puerto}")
+            self._lbl_estado.setText(f"Conectado (Arduino): {puerto}")
             self._lbl_estado.setStyleSheet("color: #00cc44;")
-            logger.info(f"Conectado a {puerto} ({modo})")
+            logger.info(f"Conectado a {puerto} (Arduino)")
         else:
             self._lbl_estado.setText(f"Error al conectar a {puerto}")
             self._lbl_estado.setStyleSheet("color: #ff4444;")
