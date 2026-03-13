@@ -15,6 +15,11 @@ _DEFAULTS: dict[str, Any] = {
     "raw_pmi": 0.0,
     "raw_pms": 1023.0,
     "stroke_length_mm": 150.0,
+    # Force calibration (AD623 or any analog 0-1023 source)
+    # calibrated_force = (raw - force_zero_raw) * (force_known_physical_n / (force_known_raw - force_zero_raw))
+    "force_zero_raw": 512.0,
+    "force_known_raw": 1023.0,
+    "force_known_physical_n": 100.0,
 }
 
 

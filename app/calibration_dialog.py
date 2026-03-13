@@ -1,4 +1,5 @@
-"""Calibration dialog – lets the user adjust sensor offsets and PMI/PMS for distance."""
+"""Calibration dialog – lets the user adjust sensor offsets and PMI/PMS for distance,
+as well as tare and known-weight calibration for the force sensor (AD623 or HX711)."""
 
 from typing import Callable, Optional
 
@@ -24,14 +25,16 @@ class CalibrationDialog(QDialog):
         self,
         parent=None,
         get_raw_distance: Optional[Callable[[], Optional[int]]] = None,
+        get_raw_force: Optional[Callable[[], Optional[int]]] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Calibración de sensores")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(450)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
 
         self._cal = load_calibration()
         self._get_raw_distance = get_raw_distance
+        self._get_raw_force = get_raw_force
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -101,6 +104,51 @@ class CalibrationDialog(QDialog):
         pms_row.addWidget(btn_pms)
         layout.addLayout(pms_row)
 
+        # ── Force calibration (AD623 / analog 0-1023) ─────────────────────
+        force_section_lbl = QLabel("— Calibración de Fuerza (AD623) —")
+        force_section_lbl.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 13px; margin-top: 6px;")
+        force_section_lbl.setAlignment(Qt.AlignCenter)
+        layout.addWidget(force_section_lbl)
+
+        force_hint = QLabel(
+            "1. Sin ninguna carga, pulsa 'Capturar Tara (Cero)'.\n"
+            "2. Aplica una fuerza conocida y pulsa 'Capturar Peso Conocido'.\n"
+            "3. Introduce la fuerza fisica en Newtons.\n"
+            "Formula: F(N) = (raw - tara) * (F_conocida / (raw_conocido - tara))"
+        )
+        force_hint.setWordWrap(True)
+        force_hint.setStyleSheet("color: #a0a0c0; font-size: 12px;")
+        layout.addWidget(force_hint)
+
+        # Tare (zero) row
+        tare_row = QHBoxLayout()
+        self._lbl_force_tare = QLabel(f"Tara — raw actual: {int(self._cal['force_zero_raw'])}")
+        self._lbl_force_tare.setStyleSheet("color: #69ff47;")
+        tare_row.addWidget(self._lbl_force_tare)
+        tare_row.addStretch()
+        btn_tare = QPushButton("Capturar Tara (Cero)")
+        btn_tare.clicked.connect(self._capture_force_tare)
+        tare_row.addWidget(btn_tare)
+        layout.addLayout(tare_row)
+
+        # Known weight row
+        known_row = QHBoxLayout()
+        self._lbl_force_known = QLabel(f"Peso conocido — raw actual: {int(self._cal['force_known_raw'])}")
+        self._lbl_force_known.setStyleSheet("color: #ff9100;")
+        known_row.addWidget(self._lbl_force_known)
+        known_row.addStretch()
+        btn_known = QPushButton("Capturar Peso Conocido")
+        btn_known.clicked.connect(self._capture_force_known)
+        known_row.addWidget(btn_known)
+        layout.addLayout(known_row)
+
+        # Physical force value
+        force_form = QFormLayout()
+        force_form.setLabelAlignment(Qt.AlignRight)
+        self._sb_force_known_n = _spinbox(0.1, 100000.0, 1, self._cal["force_known_physical_n"])
+        force_form.addRow("Fuerza conocida (N):", self._sb_force_known_n)
+        layout.addLayout(force_form)
+
         # ── Buttons ───────────────────────────────────────────────────────
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept)
@@ -113,6 +161,12 @@ class CalibrationDialog(QDialog):
         if self._get_raw_distance is None:
             return None
         return self._get_raw_distance()
+
+    def _get_current_raw_force(self) -> Optional[int]:
+        """Return the current raw force value, or None if unavailable."""
+        if self._get_raw_force is None:
+            return None
+        return self._get_raw_force()
 
     def _capture_pmi(self):
         raw = self._get_current_raw()
@@ -131,11 +185,28 @@ class CalibrationDialog(QDialog):
         stroke = int(self._sb_stroke.value())
         self._lbl_pms.setText(f"PMS ({stroke} mm) — raw capturado: {raw}")
 
+    def _capture_force_tare(self):
+        raw = self._get_current_raw_force()
+        if raw is None:
+            self._lbl_force_tare.setText("Tara — sin conexión activa")
+            return
+        self._cal["force_zero_raw"] = float(raw)
+        self._lbl_force_tare.setText(f"Tara — raw capturado: {raw}")
+
+    def _capture_force_known(self):
+        raw = self._get_current_raw_force()
+        if raw is None:
+            self._lbl_force_known.setText("Peso conocido — sin conexión activa")
+            return
+        self._cal["force_known_raw"] = float(raw)
+        self._lbl_force_known.setText(f"Peso conocido — raw capturado: {raw}")
+
     # ------------------------------------------------------------------
     def _accept(self):
         self._cal["temp_amo_offset"] = self._sb_temp_amo.value()
         self._cal["temp_res_offset"] = self._sb_temp_res.value()
         self._cal["stroke_length_mm"] = self._sb_stroke.value()
+        self._cal["force_known_physical_n"] = self._sb_force_known_n.value()
         save_calibration(self._cal)
         self.accept()
 
