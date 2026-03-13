@@ -9,6 +9,7 @@ Baudrate: 115200, 8N1, polling a 50ms (20Hz).
 Secuencia de handshake:
     1. Enviar 'Q' (0x51) → Respuesta con firma "speeduino ...".
     2. Enviar 'F' (0x46) → Respuesta con versión del protocolo.
+    3. Enviar 'S' encapsulado (0x53) → Respuesta con firma extendida.
 
 Estructura del comando TX Read Page ('p' / 0x70):
     Byte 0:    0x00       → Header
@@ -53,8 +54,9 @@ class SpeeduinoProtocol:
     # Constantes del protocolo
     COMANDO_REALTIME = 0x41          # Comando legacy 'A' para datos en tiempo real
     COMANDO_READ_PAGE = 0x70         # Comando 'p' para leer una página de la ECU
-    COMANDO_HANDSHAKE_Q = 0x51      # Comando 'Q' de handshake (consulta de firma)
-    COMANDO_HANDSHAKE_F = 0x46      # Comando 'F' de handshake (consulta de versión)
+    COMANDO_HANDSHAKE_Q = 0x51       # Comando 'Q' de handshake (consulta de firma)
+    COMANDO_HANDSHAKE_F = 0x46       # Comando 'F' de handshake (consulta de versión)
+    COMANDO_HANDSHAKE_S = 0x53       # Comando 'S' encapsulado de firma extendida
     HEADER_BYTE_0 = 0x00             # Primer byte del header TX/RX
     HEADER_TX_LENGTH = 0x01          # Length del payload TX legacy (1 byte)
 
@@ -93,6 +95,16 @@ class SpeeduinoProtocol:
         logger.debug("Comando handshake F construido.")
         return bytes([self.COMANDO_HANDSHAKE_F])
 
+    def construir_comando_handshake_s(self) -> bytes:
+        """Construye el comando 'S' encapsulado (firma extendida del nuevo protocolo)."""
+        payload = bytearray([self.COMANDO_HANDSHAKE_S])
+        crc = self.calcular_crc32(bytes(payload))
+        cuerpo = bytearray([self.HEADER_BYTE_0, self.HEADER_TX_LENGTH])
+        cuerpo += payload
+        cuerpo.extend(struct.pack('>I', crc))
+        logger.debug(f"Comando handshake S construido: {cuerpo.hex(' ').upper()}")
+        return bytes(cuerpo)
+
     def construir_comando_read_page(
         self,
         can_id: int = READ_PAGE_CAN_ID,
@@ -118,8 +130,8 @@ class SpeeduinoProtocol:
     def validar_header_respuesta(self, datos: bytes) -> Tuple[bool, int]:
         if len(datos) < self.TAMANO_HEADER_RX:
             logger.warning(
-                f"Header demasiado corto: {len(datos)} bytes "
-                f"(esperado >= {self.TAMANO_HEADER_RX})"
+                f"Header demasiado corto: {len(datos)} bytes \
+                (esperado >= {self.TAMANO_HEADER_RX})"
             )
             return False, 0
 
@@ -129,8 +141,8 @@ class SpeeduinoProtocol:
 
         if byte_0 != 0x00 or byte_2 != 0x00:
             logger.warning(
-                f"Header inválido: {datos[:3].hex(' ').upper()} "
-                f"(esperado: 00 XX 00)"
+                f"Header inválido: {datos[:3].hex(' ').upper()} \
+                (esperado: 00 XX 00)"
             )
             return False, 0
 
@@ -153,8 +165,8 @@ class SpeeduinoProtocol:
 
         if len(datos) < tamano_esperado:
             logger.warning(
-                f"Respuesta incompleta: {len(datos)} bytes "
-                f"(esperado {tamano_esperado})"
+                f"Respuesta incompleta: {len(datos)} bytes \
+                (esperado {tamano_esperado})"
             )
             return False, None
 
@@ -169,8 +181,8 @@ class SpeeduinoProtocol:
 
         if crc_recibido != crc_calculado:
             logger.warning(
-                f"CRC32 inválido: recibido=0x{crc_recibido:08X}, "
-                f"calculado=0x{crc_calculado:08X}"
+                f"CRC32 inválido: recibido=0x{crc_recibido:08X}, \
+                calculado=0x{crc_calculado:08X}"
             )
             return False, None
 
