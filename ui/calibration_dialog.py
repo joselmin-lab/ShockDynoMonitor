@@ -126,8 +126,7 @@ class CalibrationDialog(QDialog):
           con un termómetro de referencia y calcula la corrección automáticamente.
 
     Los valores editados se guardan en la configuración al pulsar *Aceptar*
-    y se aplican al :class:`~core.data_parser.SpeeduinoDataParser` sin
-    necesidad de reconectar.
+    y se aplican al SerialManager sin necesidad de reconectar.
 
     Ejemplo de uso::
 
