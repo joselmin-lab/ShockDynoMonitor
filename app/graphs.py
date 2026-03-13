@@ -116,6 +116,7 @@ class GraphsWidget(QWidget):
         pw.setTitle(title, color=title_color, size="11pt")
         pw.getAxis("left").setTextPen("w")
         pw.getAxis("bottom").setTextPen("w")
+        pw.setMenuEnabled(False)
         return pw
 
     # ------------------------------------------------------------------
