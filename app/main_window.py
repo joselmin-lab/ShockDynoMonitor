@@ -13,6 +13,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.calibration import load_calibration
+from app.calibration_dialog import CalibrationDialog
 from app.dashboard import DashboardWidget
 from app.graphs import GraphsWidget
 from app.serial_worker import SerialWorker
@@ -51,6 +53,12 @@ QPushButton#btn_stop {
 }
 QPushButton#btn_stop:hover  { background: #802a2a; }
 QPushButton#btn_stop:pressed { background: #4f1616; }
+QPushButton#btn_cal {
+    background: #2a3a1e;
+    border-color: #6a9f3a;
+}
+QPushButton#btn_cal:hover  { background: #3a5028; }
+QPushButton#btn_cal:pressed { background: #1e2e14; }
 QStatusBar {
     background: #0d0d1a;
     color: #808099;
@@ -73,6 +81,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(_DARK_QSS)
 
         self._worker: SerialWorker | None = None
+        self._calibration = load_calibration()
 
         # ── Central widget ───────────────────────────────────────────────
         central = QWidget()
@@ -108,6 +117,12 @@ class MainWindow(QMainWindow):
         self._btn_stop.clicked.connect(self._stop)
         toolbar.addWidget(self._btn_stop)
 
+        self._btn_cal = QPushButton("⚙  Calibración")
+        self._btn_cal.setObjectName("btn_cal")
+        self._btn_cal.setToolTip("Ajustar offsets y multiplicadores de sensores")
+        self._btn_cal.clicked.connect(self._open_calibration)
+        toolbar.addWidget(self._btn_cal)
+
         toolbar.addStretch()
         root_layout.addLayout(toolbar)
 
@@ -141,7 +156,7 @@ class MainWindow(QMainWindow):
 
         self._graphs.clear_plots()
 
-        self._worker = SerialWorker(port)
+        self._worker = SerialWorker(port, calibration=self._calibration)
         self._worker.data_received.connect(self._on_data)
         self._worker.error_occurred.connect(self._on_error)
         self._worker.finished.connect(self._on_worker_finished)
@@ -158,6 +173,13 @@ class MainWindow(QMainWindow):
             self._worker.stop()
             self._worker = None
         self._set_disconnected_ui()
+
+    def _open_calibration(self):
+        dlg = CalibrationDialog(self)
+        if dlg.exec_() == CalibrationDialog.Accepted:
+            self._calibration = dlg.calibration_values()
+            if self._worker is not None:
+                self._worker.set_calibration(self._calibration)
 
     def _on_data(self, fuerza: float, recorrido: float, temp_amo: float, temp_res: float, rpm: int):
         self._dashboard.update_values(fuerza, recorrido, temp_amo, temp_res, rpm)
