@@ -432,6 +432,7 @@ class SerialManager:
             with self._lock_serial:
                 if self._serial and self._serial.is_open:
                     self._serial.reset_input_buffer()
+                    logger.debug("Buffer RX limpiado tras handshake completado.")
 
             # Pequeño delay para que la ECU procese y esté lista para el primer Read Page
             time.sleep(0.2)
@@ -449,6 +450,13 @@ class SerialManager:
         El hilo realiza el ciclo completo: enviar comando Read Page,
         leer respuesta y procesar datos, cada 50ms (20Hz).
         """
+        # Limpiar buffer RX antes de iniciar el polling para evitar leer
+        # bytes residuales del handshake en el primer ciclo
+        with self._lock_serial:
+            if self._serial and self._serial.is_open:
+                self._serial.reset_input_buffer()
+                logger.debug("Buffer RX limpiado antes de iniciar polling.")
+
         self._hilo_comunicacion = threading.Thread(
             target=self._worker_comunicacion,
             name="ComunicacionThread",
@@ -512,12 +520,19 @@ class SerialManager:
                     header
                 )
                 if not header_valido:
+                    # Intentar resync: el primer byte recibido puede no ser 0x00.
+                    # Buscar el patrón 0x00 leyendo byte a byte en lugar de
+                    # descartar todo el buffer (que podría tirar datos válidos).
                     logger.warning(
-                        f"Header inválido: {header.hex(' ').upper()}, limpiando buffer..."
+                        f"Header inválido: {header.hex(' ').upper()}, intentando resync..."
                     )
-                    with self._lock_serial:
-                        if self._serial and self._serial.is_open:
-                            self._serial.reset_input_buffer()
+                    # Si el primer byte no es 0x00, estamos desincronizados:
+                    # limpiar buffer y esperar un ciclo completo antes de reintentar.
+                    if header[0] != 0x00:
+                        with self._lock_serial:
+                            if self._serial and self._serial.is_open:
+                                self._serial.reset_input_buffer()
+                        time.sleep(0.05)  # Esperar un ciclo de polling antes de reintentar
                     continue
 
                 # 4. Calcular bytes restantes (payload + CRC) y leer bloqueante
