@@ -175,7 +175,8 @@ class MainWindow(QMainWindow):
         self._set_disconnected_ui()
 
     def _open_calibration(self):
-        dlg = CalibrationDialog(self)
+        get_raw = (lambda: self._worker.last_raw_distance) if self._worker else None
+        dlg = CalibrationDialog(self, get_raw_distance=get_raw)
         if dlg.exec_() == CalibrationDialog.Accepted:
             self._calibration = dlg.calibration_values()
             if self._worker is not None:

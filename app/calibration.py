@@ -12,8 +12,9 @@ _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.
 _DEFAULTS: dict[str, Any] = {
     "temp_amo_offset": 0.0,
     "temp_res_offset": 0.0,
-    "dist_multiplier": 1.0,
-    "dist_offset": 0.0,
+    "raw_pmi": 0.0,
+    "raw_pms": 1023.0,
+    "stroke_length_mm": 150.0,
 }
 
 

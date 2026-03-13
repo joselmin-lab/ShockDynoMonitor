@@ -10,11 +10,15 @@ class SerialWorker(QThread):
     """QThread that reads CSV lines from an Arduino and emits a signal per line.
 
     Expected Arduino format (one line per measurement):
-        Fuerza_N,Recorrido_mm,Temp_Amo_C,Temp_Res_C,RPM
+        Fuerza_N,Recorrido_raw,Temp_Amo_C,Temp_Res_C,RPM
 
-    Calibration offsets/multipliers are applied before the signal is emitted:
+    The distance field is the RAW analog integer (0-1023) from the potentiometer.
+    Calibration uses PMI/PMS (Bottom/Top Dead Center) raw values and the physical
+    stroke length to convert to mm:
+        mm = (raw - raw_pmi) * (stroke_length_mm / (raw_pms - raw_pmi))
+
+    Temperature calibration offsets are applied before the signal is emitted:
         calibrated_temp = raw_temp + offset
-        calibrated_dist = (raw_dist * multiplier) + offset
     """
 
     # fuerza_n, recorrido_mm, temp_amo, temp_res, rpm
@@ -28,11 +32,29 @@ class SerialWorker(QThread):
         self._cal = calibration if calibration is not None else load_calibration()
         self._cal_lock = threading.Lock()
         self._running = False
+        self._last_raw_distance: int | None = None
+        self._raw_lock = threading.Lock()
+
+    @property
+    def last_raw_distance(self) -> int | None:
+        """Return the most recently received raw distance value (thread-safe)."""
+        with self._raw_lock:
+            return self._last_raw_distance
 
     def set_calibration(self, calibration: dict) -> None:
         """Update calibration values while the worker is running (thread-safe)."""
         with self._cal_lock:
             self._cal = dict(calibration)
+
+    def _raw_to_mm(self, raw: int, cal: dict) -> float:
+        """Convert raw potentiometer value (0-1023) to mm using PMI/PMS calibration."""
+        raw_pmi = cal.get("raw_pmi", 0.0)
+        raw_pms = cal.get("raw_pms", 1023.0)
+        stroke = cal.get("stroke_length_mm", 150.0)
+        span = raw_pms - raw_pmi
+        if span == 0:
+            return 0.0
+        return (raw - raw_pmi) * (stroke / span)
 
     def run(self):
         self._running = True
@@ -64,17 +86,21 @@ class SerialWorker(QThread):
                         if len(parts) != 5:
                             continue
                         fuerza = float(parts[0])
-                        recorrido = float(parts[1])
+                        raw_dist = int(float(parts[1]))
                         temp_amo = float(parts[2])
                         temp_res = float(parts[3])
                         rpm = int(float(parts[4]))
+
+                        # Store latest raw distance for calibration capture
+                        with self._raw_lock:
+                            self._last_raw_distance = raw_dist
 
                         # Apply calibration (take a snapshot to minimise lock hold time)
                         with self._cal_lock:
                             cal = dict(self._cal)
                         temp_amo = temp_amo + cal.get("temp_amo_offset", 0.0)
                         temp_res = temp_res + cal.get("temp_res_offset", 0.0)
-                        recorrido = recorrido * cal.get("dist_multiplier", 1.0) + cal.get("dist_offset", 0.0)
+                        recorrido = self._raw_to_mm(raw_dist, cal)
 
                         self.data_received.emit(fuerza, recorrido, temp_amo, temp_res, rpm)
                     except ValueError:
