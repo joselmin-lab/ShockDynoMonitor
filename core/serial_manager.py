@@ -188,7 +188,7 @@ class SerialManager:
                 bytesize=self._cfg_conexion.get("bits_datos", 8),
                 parity=self._cfg_conexion.get("paridad", "N"),
                 stopbits=self._cfg_conexion.get("bits_parada", 1),
-                timeout=1.0,
+                timeout=0.1,
                 write_timeout=0.5,
             )
 
@@ -249,17 +249,37 @@ class SerialManager:
         Formato esperado por línea::
 
             Fuerza_N,Recorrido_mm,Temp_Amortiguador_C,Temp_Reservorio_C,Velocidad_RPM
+
+        El lock NO se mantiene durante ``readline()`` para evitar bloquear a
+        ``desconectar()`` u otras operaciones mientras se espera datos.
+        El puerto tiene ``timeout=0.1`` s para que el bucle sea responsivo.
         """
         logger.info("Worker de comunicación serie (Arduino ASCII) iniciado.")
 
         while not self._evento_detener.is_set():
             try:
-                linea_bytes = b""
+                # Obtener referencia al puerto sin bloquear durante la lectura.
                 with self._lock_serial:
-                    if self._serial and self._serial.is_open:
-                        linea_bytes = self._serial.readline()
+                    ser = self._serial if (self._serial and self._serial.is_open) else None
+
+                if ser is None:
+                    time.sleep(0.01)
+                    continue
+
+                # readline() bloquea como máximo `timeout` segundos (0.1 s).
+                # No se mantiene el lock durante esta llamada para no impedir
+                # que desconectar() pueda cerrar el puerto sin esperar.
+                # Si el puerto es cerrado concurrentemente, readline() lanzará
+                # SerialException; lo capturamos para salir limpiamente.
+                try:
+                    linea_bytes = ser.readline()
+                except serial.SerialException:
+                    if self._evento_detener.is_set():
+                        break
+                    raise
 
                 if not linea_bytes:
+                    # Timeout sin datos: volver al inicio del bucle
                     continue
 
                 texto = linea_bytes.decode("ascii", errors="ignore").strip()
@@ -290,7 +310,9 @@ class SerialManager:
                         logger.warning(f"Error parseando valores: {texto!r} -> {ve}")
                         self.estadisticas.incrementar_errores_crc()
                 else:
-                    logger.warning(f"Línea con formato incorrecto ({len(partes)} campos): {texto!r}")
+                    logger.debug(
+                        f"Línea descartada ({len(partes)} campos, se esperan 5): {texto!r}"
+                    )
                     self.estadisticas.incrementar_errores_crc()
 
             except Exception as e:
