@@ -18,12 +18,12 @@ Estructura del comando TX Read Page ('p' / 0x70):
     Byte 4:    0x01       → Page (página 1 = datos en tiempo real)
     Bytes 5-6: 0x00 0x00  → Offset (16-bit little-endian)
     Bytes 7-8: 0x79 0x00  → Size (16-bit little-endian, 121 bytes solicitados)
-    Bytes 9-12: CRC32 little-endian de los bytes 0-8
+    Bytes 9-12: CRC32 big-endian (MSB primero) calculado sobre los bytes 2-8 (payload)
 
 Estructura de la respuesta RX:
     Bytes 0-2: Header (00 XX 00, donde XX es el length)
     Bytes 3-N: Payload (122 bytes de datos de sensores)
-    Bytes N+1-N+4: CRC32 little-endian
+    Bytes N+1-N+4: CRC32 big-endian (MSB primero) calculado sobre el payload
 
 Nota sobre el tamaño del payload:
     El comando TX solicita 121 bytes (size=0x79), pero la ECU Speeduino
@@ -102,9 +102,9 @@ class SpeeduinoProtocol:
         Ejemplo::
 
             protocolo = SpeeduinoProtocol()
-            datos = bytes([0x00, 0x01, 0x41])
+            datos = bytes([0x51])   # Byte 'Q' de handshake
             crc = protocolo.calcular_crc32(datos)
-            # crc == 0xEF8E6ECE (little-endian: CE 6E 8E EF)
+            # crc == 0xCE6E8EEF (big-endian: CE 6E 8E EF)
         """
         return binascii.crc32(datos) & 0xFFFFFFFF
 
@@ -115,8 +115,8 @@ class SpeeduinoProtocol:
         El comando tiene la estructura:
             [0x00, 0x01, 0x41, CRC32_byte0, CRC32_byte1, CRC32_byte2, CRC32_byte3]
 
-        El CRC32 se calcula sobre los primeros 3 bytes y se agrega en
-        formato little-endian.
+        El CRC32 se calcula **solo sobre el payload** (el byte 0x41) y se agrega
+        en formato big-endian (MSB primero).
 
         Returns:
             Bytes del comando completo (7 bytes) listo para enviar por serial.
@@ -125,20 +125,20 @@ class SpeeduinoProtocol:
 
             protocolo = SpeeduinoProtocol()
             cmd = protocolo.construir_comando_realtime()
-            # cmd == bytes([0x00, 0x01, 0x41, 0xCE, 0x6E, 0x8E, 0xEF])
+            # CRC32(0x41) en big-endian (MSB primero) agregado al final
         """
-        # Construir los 3 bytes base del comando
-        cuerpo = bytearray([
-            self.HEADER_BYTE_0,        # 0x00 - Header
-            self.HEADER_TX_LENGTH,     # 0x01 - Length
-            self.COMANDO_REALTIME,     # 0x41 - Comando 'A'
-        ])
+        # Payload: solo el byte de comando 'A' (0x41)
+        payload = bytearray([self.COMANDO_REALTIME])
 
-        # Calcular CRC32 sobre el cuerpo del comando
-        crc = self.calcular_crc32(bytes(cuerpo))
+        # CRC32 se calcula SOLO sobre el payload (sin el header 00 01)
+        crc = self.calcular_crc32(bytes(payload))
 
-        # Agregar CRC32 en formato little-endian (4 bytes)
-        cuerpo.extend(struct.pack('<I', crc))
+        # Construir frame completo: header + payload + CRC32
+        cuerpo = bytearray([self.HEADER_BYTE_0, self.HEADER_TX_LENGTH])
+        cuerpo += payload
+
+        # Agregar CRC32 en formato big-endian (4 bytes, MSB primero)
+        cuerpo.extend(struct.pack('>I', crc))
 
         logger.debug(f"Comando realtime construido: {cuerpo.hex(' ').upper()}")
         return bytes(cuerpo)
@@ -196,7 +196,8 @@ class SpeeduinoProtocol:
              size_lo, size_hi, CRC32_b0, CRC32_b1, CRC32_b2, CRC32_b3]
 
         Offset y size se codifican en 16 bits little-endian.
-        El CRC32 se calcula sobre los 9 bytes del comando (header + payload).
+        El CRC32 se calcula **solo sobre el payload** (los 7 bytes después del header)
+        y se empaqueta en formato big-endian (MSB primero).
 
         Args:
             can_id: Identificador de CAN bus (por defecto 0x00 = local).
@@ -212,7 +213,8 @@ class SpeeduinoProtocol:
             protocolo = SpeeduinoProtocol()
             cmd = protocolo.construir_comando_read_page()
             # cmd == bytes([0x00, 0x07, 0x70, 0x00, 0x01,
-            #               0x00, 0x00, 0x79, 0x00, ...CRC...])
+            #               0x00, 0x00, 0x79, 0x00, 0xB2, 0x99, 0xE4, 0x5A])
+            # CRC32(70 00 01 00 00 79 00) = 0xB299E45A → B2 99 E4 5A en BE (big-endian)
         """
         # Payload: cmd 'p' (B) + canid (B) + page (B) + offset 16-bit LE (H) + size 16-bit LE (H)
         payload = struct.pack(
@@ -224,12 +226,13 @@ class SpeeduinoProtocol:
             size,                    # Size  (16-bit LE)
         )
 
-        # Construir cabecera + payload (sin CRC)
-        cuerpo = bytearray([self.HEADER_BYTE_0, len(payload)]) + bytearray(payload)
+        # CRC32 se calcula SOLO sobre el payload (sin el header 00 07)
+        crc = self.calcular_crc32(bytes(payload))
 
-        # Calcular CRC32 sobre el cuerpo completo y agregar en little-endian
-        crc = self.calcular_crc32(bytes(cuerpo))
-        cuerpo.extend(struct.pack('<I', crc))
+        # Construir frame completo: header + payload + CRC32
+        cuerpo = bytearray([self.HEADER_BYTE_0, len(payload)])
+        cuerpo += bytearray(payload)
+        cuerpo.extend(struct.pack('>I', crc))
 
         logger.debug(f"Comando read_page construido: {cuerpo.hex(' ').upper()}")
         return bytes(cuerpo)
@@ -329,16 +332,15 @@ class SpeeduinoProtocol:
         # Extraer payload (bytes después del header, antes del CRC)
         payload = datos[self.TAMANO_HEADER_RX: self.TAMANO_HEADER_RX + length]
 
-        # Extraer CRC32 recibido (últimos 4 bytes, little-endian)
+        # Extraer CRC32 recibido (últimos 4 bytes, big-endian, MSB primero)
         crc_recibido_bytes = datos[
             self.TAMANO_HEADER_RX + length:
             self.TAMANO_HEADER_RX + length + self.TAMANO_CRC
         ]
-        crc_recibido = struct.unpack('<I', crc_recibido_bytes)[0]
+        crc_recibido = struct.unpack('>I', crc_recibido_bytes)[0]
 
-        # Calcular CRC32 esperado sobre header + payload
-        datos_para_crc = datos[:self.TAMANO_HEADER_RX + length]
-        crc_calculado = self.calcular_crc32(datos_para_crc)
+        # Calcular CRC32 esperado sobre el payload
+        crc_calculado = self.calcular_crc32(payload)
 
         # Verificar CRC32
         if crc_recibido != crc_calculado:
