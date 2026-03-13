@@ -15,6 +15,9 @@ _DEFAULTS: dict[str, Any] = {
     "raw_pmi": 0.0,
     "raw_pms": 1023.0,
     "stroke_length_mm": 150.0,
+    "force_zero_raw": 0.0,
+    "force_known_raw": 1.0,
+    "force_known_physical": 98.1,
 }
 
 

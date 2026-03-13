@@ -176,7 +176,8 @@ class MainWindow(QMainWindow):
 
     def _open_calibration(self):
         get_raw = (lambda: self._worker.last_raw_distance) if self._worker else None
-        dlg = CalibrationDialog(self, get_raw_distance=get_raw)
+        get_raw_force = (lambda: self._worker.last_raw_force) if self._worker else None
+        dlg = CalibrationDialog(self, get_raw_distance=get_raw, get_raw_force=get_raw_force)
         if dlg.exec_() == CalibrationDialog.Accepted:
             self._calibration = dlg.calibration_values()
             if self._worker is not None:
